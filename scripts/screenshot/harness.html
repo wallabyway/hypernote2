@@ -1,0 +1,47 @@
+<!doctype html>
+<!-- Renders web/ with sample data and a stubbed native bridge. Used only to generate docs screenshots. -->
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="../../web/app.css"></head>
+<body><div id="app"></div><div id="toasts"></div>
+<script>
+const now = Date.now();
+const iso = (min) => new Date(now - min * 60000).toISOString();
+const t = (id, title, icon, description) => ({ id, title, icon, description, builtIn: true, sections: [] });
+const templates = [
+  t("general", "General Meeting", "📝", "A balanced summary"),
+  t("one-on-one", "1-1 Meeting", "🤝", "Check-in"),
+  t("brainstorming", "Brainstorming", "💡", "Ideas"),
+  t("daily-standup", "Daily Standup", "☀️", "Yesterday / today / blockers"),
+  t("customer-demo", "Customer Demo", "🎯", "Demo notes"),
+];
+const sessions = {
+  s1: {
+    id: "s1", title: "Platform team standup", createdAt: iso(25), updatedAt: iso(5), notes: "- API review Thursday\n- legal still blocking pricing page",
+    templateId: "daily-standup", status: "done", error: null, durationSec: 612, hasAudio: true,
+    speakerNames: { A: "Maya", B: "Raj" },
+    utterances: [
+      { speaker: "A", text: "Morning everyone. Quick round: what did you ship yesterday, what's today, and anything blocking you?", startMs: 0, endMs: 7000 },
+      { speaker: "B", text: "I finished the billing API and opened the pull request. Today I'm addressing review comments. No blockers.", startMs: 8000, endMs: 17000 },
+      { speaker: "C", text: "I'm still waiting on legal for the pricing page copy. Without it I can't publish the launch page.", startMs: 18000, endMs: 26000 },
+      { speaker: "A", text: "I'll ping legal after this call. Raj, can you get the API reviewed by Thursday?", startMs: 27000, endMs: 34000 },
+      { speaker: "B", text: "Yes, Thursday works.", startMs: 35000, endMs: 37000 },
+    ],
+    summary: "## Updates by Person\n### Maya\n- Facilitated the standup and took the legal follow-up.\n### Raj\n- **Yesterday:** finished the billing API and opened the pull request.\n- **Today:** addressing review comments.\n- **Blockers:** none.\n### Speaker C\n- **Blockers:** waiting on legal for the pricing page copy.\n\n## Blockers & Risks\n- Pricing page launch is blocked until legal responds (affects Speaker C).\n\n## Announcements\n- None.\n\n## Action Items\n- Maya: ping legal about the pricing page copy.\n- Raj: get the billing API reviewed by Thursday.",
+    summaryTemplateId: "daily-standup",
+  },
+};
+const list = [
+  { id: "s1", title: "Platform team standup", createdAt: iso(25), status: "done", templateId: "daily-standup", durationSec: 612, snippet: "Updates by Person Maya Facilitated the standup" },
+  { id: "s2", title: "Acme Corp demo", createdAt: iso(60 * 5), status: "done", templateId: "customer-demo", durationSec: 2400, snippet: "Attendees & Context Acme Corp: Dana (VP Ops)" },
+  { id: "s3", title: "Onboarding ideas brainstorm", createdAt: iso(60 * 29), status: "done", templateId: "brainstorming", durationSec: 1800, snippet: "Goal Reduce time-to-first-note for new users" },
+  { id: "s4", title: "1-1 with Priya", createdAt: iso(60 * 24 * 3), status: "done", templateId: "one-on-one", durationSec: 1500, snippet: "Overview Weekly check-in on roadmap and growth" },
+];
+window.webkit = { messageHandlers: { native: { postMessage: async ({ cmd, args }) => {
+  if (cmd === "state") return { hasAssemblyKey: true, hasDeepseekKey: true, templates, recordingSessionId: null,
+    settings: { captureSystemAudio: true, defaultTemplateId: "general", deepseekModel: "deepseek-flash" } };
+  if (cmd === "listSessions") return list;
+  if (cmd === "getSession") return sessions[args.id] || sessions.s1;
+  return null;
+} } } };
+</script>
+<script src="../../web/markdown.js"></script>
+<script src="../../web/app.js"></script></body></html>

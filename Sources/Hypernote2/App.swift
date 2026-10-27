@@ -1,8 +1,25 @@
 import AppKit
 import SwiftUI
 
+/// Adds "Launch at Login" to the Dock icon's right-click menu (visible while the window is open).
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        item.target = self
+        item.state = AppModel.shared.launchAtLogin ? .on : .off
+        menu.addItem(item)
+        return menu
+    }
+
+    @MainActor @objc private func toggleLaunchAtLogin() {
+        AppModel.shared.setLaunchAtLogin(!AppModel.shared.launchAtLogin)
+    }
+}
+
 @main
 struct Hypernote2App: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @ObservedObject private var model = AppModel.shared
 
     var body: some Scene {
@@ -40,6 +57,10 @@ struct MenuContent: View {
                 if !wasRecording { show() }
             }
         }
+        Divider()
+        Toggle("Launch at Login", isOn: Binding(
+            get: { model.launchAtLogin },
+            set: { model.setLaunchAtLogin($0) }))
         Divider()
         Button("Quit Hypernote2") { NSApp.terminate(nil) }
             .keyboardShortcut("q")

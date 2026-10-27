@@ -1,0 +1,8 @@
+{
+  "name": "hypernote2-screenshots",
+  "private": true,
+  "type": "module",
+  "description": "Generates docs/*.png from web/ with sample data. Run: npm install && npm run shots",
+  "scripts": { "shots": "node shot.mjs" },
+  "devDependencies": { "puppeteer-core": "23.11.1" }
+}

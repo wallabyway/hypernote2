@@ -1,5 +1,6 @@
 import AppKit
 import HypernoteCore
+import ServiceManagement
 import SwiftUI
 import WebKit
 
@@ -11,6 +12,7 @@ final class AppModel: ObservableObject {
     let controller = AppController()
     let webView: WKWebView
     @Published var isRecording = false
+    @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     private let bridge = Bridge()
 
@@ -28,6 +30,12 @@ final class AppModel: ObservableObject {
         controller.onEvent = { [weak self] name, payload in self?.send(event: name, payload: payload) }
         controller.onRecordingChange = { [weak self] recording in self?.isRecording = recording }
         loadUI()
+
+        // The user can also toggle the login item in System Settings; re-read it whenever a menu opens.
+        NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil,
+                                               queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.refreshLaunchAtLogin() }
+        }
     }
 
     private func loadUI() {
@@ -43,6 +51,27 @@ final class AppModel: ObservableObject {
             return
         }
         webView.loadFileURL(dir.appendingPathComponent("index.html"), allowingReadAccessTo: dir)
+    }
+
+    /// Registers or removes the app as a login item (System Settings → General → Login Items).
+    func setLaunchAtLogin(_ enabled: Bool) {
+        let service = SMAppService.mainApp
+        do {
+            if enabled { try service.register() } else { try service.unregister() }
+        } catch {
+            send(event: "toast", payload: ["kind": "error",
+                "message": "Couldn't change Launch at Login: \(error.localizedDescription). Try moving Hypernote2.app to /Applications."])
+        }
+        if enabled && service.status == .requiresApproval {
+            send(event: "toast", payload: ["kind": "warning",
+                "message": "Approve Hypernote2 in System Settings → General → Login Items."])
+            SMAppService.openSystemSettingsLoginItems()
+        }
+        refreshLaunchAtLogin()
+    }
+
+    func refreshLaunchAtLogin() {
+        launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     func send(event: String, payload: [String: Any]) {
