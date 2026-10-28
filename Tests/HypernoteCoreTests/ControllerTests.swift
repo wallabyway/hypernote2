@@ -32,7 +32,8 @@ final class ControllerTests: XCTestCase {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubProtocol.self]
         secrets = InMemorySecretStore()
-        controller = AppController(store: Store(root: dir), secrets: secrets, urlSession: URLSession(configuration: config))
+        controller = AppController(store: Store(root: dir), secrets: secrets, urlSession: URLSession(configuration: config),
+                                   obsidianConfig: dir.appendingPathComponent("obsidian.json"))
         events = []
         controller.onEvent = { [unowned self] name, payload in events.append((name, payload)) }
         StubProtocol.requests = []
@@ -149,6 +150,52 @@ final class ControllerTests: XCTestCase {
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("AssemblyAI"))
         }
+    }
+
+    func testExportSummaryWritesMarkdownIntoObsidianVault() async throws {
+        // Two vaults; the open one wins.
+        let fm = FileManager.default
+        let open = dir.appendingPathComponent("Work Vault"), other = dir.appendingPathComponent("Old")
+        for v in [open, other] { try fm.createDirectory(at: v.appendingPathComponent(".obsidian"), withIntermediateDirectories: true) }
+        let config = ["vaults": ["a": ["path": other.path, "ts": 999], "b": ["path": open.path, "ts": 1, "open": true]]]
+        try JSONSerialization.data(withJSONObject: config).write(to: dir.appendingPathComponent("obsidian.json"))
+
+        var s = Session(id: "x", templateId: "daily-standup", now: Date(timeIntervalSince1970: 1_761_600_000))
+        s.title = "Standup: API / pricing"
+        s.summary = "## Action Items\n- Raj: review"
+        s.notes = "ping legal"
+        s.durationSec = 600
+        s.utterances = [Utterance(speaker: "A", text: "hi", startMs: 0, endMs: 1), Utterance(speaker: "B", text: "yo", startMs: 1, endMs: 2)]
+        s.speakerNames = ["A": "Maya"]
+        try controller.store.save(s)
+
+        let state = try await controller.handle(command: "state", args: [:]) as! [String: Any]
+        let export = state["export"] as! [String: Any]
+        XCTAssertEqual(export["folder"] as? String, open.appendingPathComponent("Meetings").path)
+        XCTAssertEqual(export["vault"] as? String, "Work Vault")
+
+        let r = try await controller.handle(command: "exportSummary", args: ["id": "x"]) as! [String: Any]
+        let text = try String(contentsOfFile: r["path"] as! String, encoding: .utf8)
+        XCTAssertTrue((r["name"] as! String).hasSuffix("Standup API pricing.md"), r["name"] as! String)
+        XCTAssertTrue(text.hasPrefix("---\ntitle: \"Standup: API / pricing\""))
+        XCTAssertTrue(text.contains("speakers: [\"Maya\", \"Speaker B\"]"))
+        XCTAssertTrue(text.contains("template: \"Daily Standup\""))
+        XCTAssertTrue(text.contains("# Standup: API / pricing\n\n## Action Items\n- Raj: review\n"))
+        XCTAssertTrue(text.contains("## My Notes\n\nping legal"))
+
+        // A custom folder overrides the vault default; reset restores it.
+        let custom = dir.appendingPathComponent("elsewhere")
+        _ = try await controller.handle(command: "setSettings", args: ["exportFolder": custom.path])
+        _ = try await controller.handle(command: "exportSummary", args: ["id": "x"])
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: custom.path).count, 1)
+        let reset = try await controller.handle(command: "setSettings", args: ["resetExportFolder": true]) as! [String: Any]
+        XCTAssertEqual((reset["export"] as! [String: Any])["isCustom"] as? Bool, false)
+    }
+
+    func testExportWithoutSummaryFails() async throws {
+        try controller.store.save(Session(id: "e", templateId: "general"))
+        do { _ = try await controller.handle(command: "exportSummary", args: ["id": "e"]); XCTFail() }
+        catch { XCTAssertTrue(error.localizedDescription.contains("no summary")) }
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping () -> Bool) async throws {

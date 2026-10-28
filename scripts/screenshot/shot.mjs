@@ -26,6 +26,21 @@ await page.click('[data-tab="transcript"]');
 await page.waitForSelector(".utt");
 await page.screenshot({ path: path.join(docs, "screenshot-transcript.png") });
 
+// Obsidian export: the button on the summary plus its confirmation toast...
+await page.click('[data-tab="summary"]');
+await page.waitForSelector("#export-summary");
+await page.click("#export-summary");
+await page.waitForSelector(".toast.success");
+await page.screenshot({ path: path.join(docs, "screenshot-obsidian.png") });
+
+// ...and the folder setting.
+await page.evaluate(() => document.querySelectorAll(".toast").forEach((t) => t.remove()));
+await page.click("#settings-btn");
+await page.waitForSelector("#export-path");
+await page.mouse.move(1100, 20);
+await page.evaluate(() => document.querySelector("#export-path").closest(".section").scrollIntoView({ block: "center" }));
+await page.screenshot({ path: path.join(docs, "screenshot-obsidian-settings.png") });
+
 await browser.close();
 if (errors.length) { console.error(errors); process.exit(1); }
 console.log("wrote", docs);

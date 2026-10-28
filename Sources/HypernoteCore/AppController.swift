@@ -12,6 +12,7 @@ public final class AppController {
     let store: Store
     let secrets: SecretStore
     let urlSession: URLSession
+    let obsidianConfig: URL
     private var recorder: MeetingRecorder?
     private var recordingStart: Date?
     private var tickTimer: Timer?
@@ -24,10 +25,11 @@ public final class AppController {
     }()
 
     public init(store: Store = Store(), secrets: SecretStore = KeychainSecretStore(),
-                urlSession: URLSession = .shared) {
+                urlSession: URLSession = .shared, obsidianConfig: URL = ObsidianVaults.configURL) {
         self.store = store
         self.secrets = secrets
         self.urlSession = urlSession
+        self.obsidianConfig = obsidianConfig
         recoverInterruptedSessions()
     }
 
@@ -44,6 +46,11 @@ public final class AppController {
             var s = store.loadSettings()
             if let v = args["captureSystemAudio"] as? Bool { s.captureSystemAudio = v }
             if let v = args["defaultTemplateId"] as? String { s.defaultTemplateId = v }
+            if args["resetExportFolder"] as? Bool == true { s.exportFolder = nil }
+            if let v = args["exportFolder"] as? String {
+                let path = (v.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+                s.exportFolder = path.isEmpty ? nil : path
+            }
             try store.save(s)
             return state()
         case "listSessions":
@@ -84,6 +91,20 @@ public final class AppController {
             let id = try requireId(args)
             try store.saveCustomTemplates(store.loadCustomTemplates().filter { $0.id != id })
             return try json(store.allTemplates())
+        case "exportSummary":
+            return try exportSummary(try requireSession(args))
+        case "chooseExportFolder":
+            if let path = await chooseFolder(start: exportFolder()) {
+                var s = store.loadSettings()
+                s.exportFolder = path
+                try store.save(s)
+            }
+            return state()
+        case "revealExportFolder":
+            let folder = exportFolder()
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            NSWorkspace.shared.activateFileViewerSelecting([folder])
+            return NSNull()
         case "copy":
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(args["text"] as? String ?? "", forType: .string)
@@ -111,7 +132,57 @@ public final class AppController {
             "settings": (try? json(store.loadSettings())) ?? NSNull(),
             "templates": (try? json(store.allTemplates())) ?? [],
             "recordingSessionId": recordingSessionId ?? NSNull(),
+            "export": exportInfo(),
         ]
+    }
+
+    // MARK: Markdown export (Obsidian)
+
+    /// The folder "Save to Obsidian" writes to: the user's choice, else `<Obsidian vault>/Meetings`.
+    func exportFolder() -> URL {
+        if let custom = store.loadSettings().exportFolder, !custom.isEmpty {
+            return URL(fileURLWithPath: custom, isDirectory: true)
+        }
+        return ObsidianVaults.defaultFolder(configURL: obsidianConfig)
+    }
+
+    private func exportInfo() -> [String: Any] {
+        let folder = exportFolder()
+        return [
+            "folder": folder.path,
+            "isCustom": store.loadSettings().exportFolder != nil,
+            "vault": ObsidianVaults.vaultName(containing: folder) ?? NSNull(),
+            "detectedVault": ObsidianVaults.preferredVault(configURL: obsidianConfig)?.lastPathComponent ?? NSNull(),
+        ]
+    }
+
+    private func exportSummary(_ session: Session) throws -> [String: Any] {
+        guard !session.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HypernoteError.message("There's no summary to save yet.")
+        }
+        let template = store.allTemplates().first { $0.id == (session.summaryTemplateId ?? session.templateId) }
+        let folder = exportFolder()
+        let url: URL
+        do { url = try MarkdownExport.write(session: session, template: template, to: folder) }
+        catch { throw HypernoteError.message("Couldn't save to \(folder.path): \(describe(error))") }
+        return ["path": url.path, "name": url.lastPathComponent,
+                "vault": ObsidianVaults.vaultName(containing: folder) ?? NSNull()]
+    }
+
+    private func chooseFolder(start: URL) async -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Folder"
+        panel.message = "Choose where Hypernote2 saves Markdown summaries (e.g. a folder in your Obsidian vault)."
+        var dir = start
+        while !FileManager.default.fileExists(atPath: dir.path) && dir.path != "/" { dir.deleteLastPathComponent() }
+        panel.directoryURL = dir
+        NSApp.activate(ignoringOtherApps: true)
+        let response = await withCheckedContinuation { cont in panel.begin { cont.resume(returning: $0) } }
+        return response == .OK ? panel.url?.path : nil
     }
 
     private func json<T: Encodable>(_ value: T) throws -> Any {

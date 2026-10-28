@@ -41,6 +41,7 @@
     copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
     refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
     sparkles: '<path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 3v4M17 5h4"/>',
+    obsidian: '<path d="M8.5 2.5 16 4l4 7-3 9.5-6 1.5-6.5-6L6 9z"/><path d="M8.5 2.5 11 13l-6.5 2"/><path d="m11 13 6 7.5"/>',
     folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   };
   const icon = (n) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[n]}</svg>`;
@@ -78,6 +79,8 @@
 
   const templateById = (id) => (S.boot.templates.find((t) => t.id === id) || S.boot.templates[0]);
   const isBusy = (s) => ["uploading", "transcribing", "summarizing"].includes(s.status);
+  const home = (p) => String(p || "").replace(/^\/Users\/[^/]+/, "~");
+  const exportLabel = () => (S.boot.export && S.boot.export.vault ? "Save to Obsidian" : "Save .md");
   const speakerName = (s, label) => (s.speakerNames && s.speakerNames[label]) || `Speaker ${label}`;
 
   // ---------- data ----------
@@ -237,9 +240,26 @@
           <button class="switch ${set.captureSystemAudio ? "on" : ""}" id="sys-toggle" aria-label="Capture system audio"></button></div>
         <div class="field" style="margin-top:14px"><label>Default template</label>
           <select id="default-tpl">${b.templates.map((t) => `<option value="${esc(t.id)}" ${t.id === set.defaultTemplateId ? "selected" : ""}>${esc(t.icon)} ${esc(t.title)}</option>`).join("")}</select></div></div>
+      ${exportSettingsHTML()}
       <div class="section"><h2>Summary templates</h2>${S.editTemplate ? templateEditorHTML() : tpls + `<div style="margin-top:12px"><button class="btn" id="tpl-new">${icon("plus")} New template</button></div>`}</div>
       <div class="help">Notes and audio are stored in ~/Library/Application Support/Hypernote2. Audio is uploaded to AssemblyAI for transcription; transcripts are sent to DeepSeek for summaries.</div>
     </div></div>`;
+  }
+
+  function exportSettingsHTML() {
+    const x = S.boot.export || {};
+    const source = x.isCustom
+      ? (x.vault ? `Custom folder in the <b>${esc(x.vault)}</b> Obsidian vault.` : "Custom folder (not inside an Obsidian vault).")
+      : (x.detectedVault ? `Detected from Obsidian: the <b>${esc(x.detectedVault)}</b> vault.` : "Obsidian wasn't found, so notes go to Documents. Choose a folder in your vault.");
+    return `<div class="section"><h2>Save to Obsidian</h2>
+        <div class="help" style="margin-bottom:10px">The <b>Save to Obsidian</b> button on a summary writes it as a Markdown file (with date, speakers and tags as properties) into this folder. Saving the same note again updates the file.</div>
+        <div class="field"><label>Folder</label>
+          <div class="path-row"><span class="path selectable" id="export-path" title="${esc(x.folder || "")}">${icon("folder")}<span>${esc(home(x.folder))}</span></span></div>
+          <div class="help">${source}</div></div>
+        <div class="row" style="justify-content:flex-start;gap:8px">
+          <button class="btn" id="export-choose">${icon("folder")} Choose folder…</button>
+          ${x.isCustom ? `<button class="btn" id="export-reset">Use Obsidian default</button>` : ""}
+          <button class="btn" id="export-reveal">Show in Finder</button></div></div>`;
   }
 
   function templateEditorHTML() {
@@ -316,7 +336,7 @@
     }
     return html + `<div class="toolbar"><span class="grow"></span>
         <button class="btn" id="regen-btn" ${s.status === "summarizing" ? "disabled" : ""}>${icon("refresh")} Regenerate</button>
-        <button class="btn" id="copy-summary">${icon("copy")} Copy</button></div>
+        <button class="btn primary" id="export-summary" ${s.status === "summarizing" ? "disabled" : ""} title="Save as Markdown to ${esc(home(S.boot.export && S.boot.export.folder))}">${icon("obsidian")} ${exportLabel()}</button></div>
       <div class="md selectable ${s.status === "summarizing" ? "caret" : ""}" id="summary-body">${window.renderMarkdown(s.summary)}</div>`;
   }
 
@@ -352,6 +372,9 @@
     });
     const dt = $("#default-tpl");
     if (dt) dt.onchange = async () => { try { S.boot = await native("setSettings", { defaultTemplateId: dt.value }); } catch (e) { fail(e); } };
+    on("#export-choose", async () => { try { S.boot = await native("chooseExportFolder"); renderMain(); } catch (e) { fail(e); } });
+    on("#export-reset", async () => { try { S.boot = await native("setSettings", { resetExportFolder: true }); renderMain(); } catch (e) { fail(e); } });
+    on("#export-reveal", () => native("revealExportFolder").catch(fail));
     bindTemplates();
 
     if (S.view !== "note" || !S.cur) return;
@@ -377,7 +400,12 @@
     on("#gen-btn", summarize);
     on("#regen-btn", summarize);
     on("#retry-btn", async () => { try { await native("retry", { id: s.id }); } catch (e) { fail(e); } });
-    on("#copy-summary", () => native("copy", { text: (s.title ? `# ${s.title}\n\n` : "") + s.summary }).then(() => toast("Summary copied")));
+    on("#export-summary", async () => {
+      try {
+        const r = await native("exportSummary", { id: s.id });
+        toast(`${r.vault ? `Saved to Obsidian (${r.vault})` : "Saved"}: ${r.name}`, "success");
+      } catch (e) { fail(e); }
+    });
     on("#copy-transcript", () => native("copy", { text: s.utterances.map((u) => `[${fmtMs(u.startMs)}] ${speakerName(s, u.speaker)}: ${u.text}`).join("\n") }).then(() => toast("Transcript copied")));
 
     document.querySelectorAll(".spk").forEach((n) => (n.onclick = (e) => {

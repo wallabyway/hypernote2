@@ -37,7 +37,12 @@ const list = [
 ];
 window.webkit = { messageHandlers: { native: { postMessage: async ({ cmd, args }) => {
   if (cmd === "state") return { hasAssemblyKey: true, hasDeepseekKey: true, templates, recordingSessionId: null,
-    settings: { captureSystemAudio: true, defaultTemplateId: "general", deepseekModel: "deepseek-flash" } };
+    settings: { captureSystemAudio: true, defaultTemplateId: "general", deepseekModel: "deepseek-flash" },
+    export: { folder: "/Users/you/Documents/Work Notes/Meetings", isCustom: false, vault: "Work Notes", detectedVault: "Work Notes" } };
+  if (cmd === "exportSummary") {
+    const d = new Date(sessions.s1.createdAt), name = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} Platform team standup.md`;
+    return { path: "/Users/you/Documents/Work Notes/Meetings/" + name, name, vault: "Work Notes" };
+  }
   if (cmd === "listSessions") return list;
   if (cmd === "getSession") return sessions[args.id] || sessions.s1;
   return null;

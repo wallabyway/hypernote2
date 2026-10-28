@@ -6,8 +6,8 @@ cd "$(dirname "$0")/.."
 APP="build/Hypernote2.app"
 SWIFT_FLAGS=(${SWIFT_BUILD_FLAGS:-})
 
-swift build -c release "${SWIFT_FLAGS[@]}"
-BIN="$(swift build -c release "${SWIFT_FLAGS[@]}" --show-bin-path)/Hypernote2"
+swift build -c release ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+BIN="$(swift build -c release ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} --show-bin-path)/Hypernote2"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

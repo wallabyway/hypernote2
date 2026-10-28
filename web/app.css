@@ -205,6 +205,11 @@ select.chip { appearance: none; -webkit-appearance: none; padding-right: 8px; cu
 .tpl .ic { font-size: 18px; width: 26px; text-align: center; }
 .tpl .grow { flex: 1; min-width: 0; }
 .tpl .grow small { color: var(--muted-foreground); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.section > .help { color: var(--muted-foreground); font-size: 12.5px; }
+.path { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 10px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; word-break: break-all; }
+.path svg { width: 15px; height: 15px; flex: none; color: #7c3aed; }
 .sec-edit { display: grid; grid-template-columns: 1fr 1.6fr auto; gap: 6px; margin-bottom: 6px; }
 .sec-edit input { height: 32px !important; }
 
@@ -212,4 +217,5 @@ select.chip { appearance: none; -webkit-appearance: none; padding-right: 8px; cu
 .toast { background: var(--primary); color: var(--primary-foreground); padding: 10px 14px; border-radius: var(--radius);
   box-shadow: 0 6px 24px rgba(0,0,0,.2); font-size: 13px; }
 .toast.error { background: var(--destructive); color: #fff; }
+.toast.success { background: #6d28d9; color: #fff; }
 .toast.warning { background: #b45309; color: #fff; }

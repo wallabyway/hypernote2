@@ -117,6 +117,8 @@ public struct Settings: Codable, Equatable {
     public var captureSystemAudio: Bool = true
     public var defaultTemplateId: String = BuiltInTemplates.general.id
     public var deepseekModel: String = "deepseek-flash"
+    /// Where "Save to Obsidian" writes Markdown files. nil = auto-detected Obsidian vault.
+    public var exportFolder: String?
 
     public init() {}
 }

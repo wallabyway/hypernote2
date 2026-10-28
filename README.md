@@ -12,6 +12,7 @@ A tiny, all-cloud meeting notepad for macOS, modelled on [Hyprnote](https://gith
 
 - **Speaker-labelled transcripts** from AssemblyAI (`speaker_labels`). Click a speaker name to rename it.
 - **Template summaries** from DeepSeek Flash, streamed as they're written: General, 1-1, Brainstorming, Daily Standup, Customer Demo, plus your own (Settings → Summary templates).
+- **Save to Obsidian.** One click writes the summary as a Markdown file into your Obsidian vault (detected automatically), with date, speakers and tags as properties.
 - **Your notes count.** What you type during the meeting steers the summary.
 - **Menu bar app** with Start/Stop Recording, and optional **Launch at Login**.
 - **Nothing to download.** No models, no local inference; the built app is about 1 MB.
@@ -47,6 +48,21 @@ Click the waveform icon in the menu bar and toggle **Launch at Login** (a checkm
 
 If macOS refuses (it can for apps outside `/Applications`), move `Hypernote2.app` to `/Applications` and try again. If it asks for approval, Hypernote2 opens the Login Items pane for you.
 
+## Save to Obsidian
+
+The **Save to Obsidian** button on the Summary tab writes the note to a `.md` file. If the folder isn't inside an Obsidian vault, the button reads **Save .md** instead.
+
+![Save to Obsidian: the summary toolbar button and its confirmation](docs/screenshot-obsidian.png)
+
+- **Default folder:** `<vault>/Meetings`. Hypernote2 reads Obsidian's vault list (`~/Library/Application Support/obsidian/obsidian.json`) and uses the vault that's open in Obsidian, or else the one you used most recently. Without Obsidian it falls back to `~/Documents/Hypernote2`.
+- **Change it** in Settings → Save to Obsidian: **Choose folder…** picks any folder, **Use Obsidian default** goes back to the detected vault, and **Show in Finder** opens the folder.
+- **File name:** `YYYY-MM-DD Title.md`. Saving the same note again overwrites that file, so re-save after you regenerate a summary.
+- **Contents:** YAML properties (`title`, `date`, `time`, `duration_min`, `template`, `speakers`, `tags: [meeting, hypernote]`), then `# Title`, the summary, and your notes under `## My Notes`.
+
+![Settings: choose the Obsidian export folder](docs/screenshot-obsidian-settings.png)
+
+The transcript tab still has a **Copy** button for the plain-text transcript.
+
 ## How it works
 
 1. **Start recording** (window button or menu bar). Microphone audio, plus system audio if you allow it, is mixed into a mono 16 kHz AAC file (about 14 MB/hour).
@@ -55,7 +71,7 @@ If macOS refuses (it can for apps outside `/Applications`), move `Hypernote2.app
 
 Architecture in short: a SwiftUI menu bar app hosts a `WKWebView` (`web/`, plain HTML/CSS/JS) and talks to Swift through a small message bridge. All logic lives in the `HypernoteCore` library. See [PLAN.md](PLAN.md) for how it was built and why.
 
-Data lives in `~/Library/Application Support/Hypernote2/` (one JSON file and `audio.m4a` per note).
+Data lives in `~/Library/Application Support/Hypernote2/` (one JSON file and `audio.m4a` per note). Markdown exports are separate copies in your chosen folder.
 
 ## Permissions
 
