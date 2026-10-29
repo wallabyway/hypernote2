@@ -28,6 +28,25 @@ public enum Prompts {
     they were only mentioned briefly.
     - If a section has nothing to report, write "None discussed."
     - Write in the language of the transcript.
+
+    Diagrams (only where a section asks for one):
+    - Write each diagram as a fenced code block that starts with ```mermaid and ends with ```. \
+    It is rendered in the app and in Obsidian, so it must be valid Mermaid that parses on the \
+    first try.
+    - Base it only on the meeting. Keep it small: at most 12 nodes or items, with labels of a \
+    few words.
+    - Flowcharts: start with `flowchart LR` or `flowchart TD`. Use short ids like A, B, C and \
+    put every label in double quotes, e.g. `A["Pricing page"] -->|"blocked by"| B["Legal review"]`. \
+    Use `subgraph` to group by person or theme when it helps.
+    - Mindmaps: start with `mindmap`, then one root such as `root((Topic))`, children indented \
+    by two spaces, plain words only (no quotes, brackets or colons in the text).
+    - Timelines: `timeline`, then `title ...`, then lines like `Thursday : API review`.
+    - Icons are optional: a flowchart label may start with one of fa:fa-check, fa:fa-x, \
+    fa:fa-user, fa:fa-users, fa:fa-calendar, fa:fa-clock, fa:fa-flag or fa:fa-warning, inside \
+    the quotes, e.g. `B["fa:fa-check Approved"]` or `-->|"fa:fa-x"|`. Use them sparingly, only \
+    where they add meaning (done/blocked, people, dates, risks).
+    - Do not use styling, classDef, themes, `%%{init}%%` directives, other icons, HTML or emoji \
+    in diagrams. Never put parentheses, quotes or colons in an unquoted label.
     """
 
     public static func summaryMessages(session: Session, template: MeetingTemplate)

@@ -45,12 +45,9 @@ public enum ObsidianVaults {
 
 /// Turns a note into an Obsidian-friendly Markdown file.
 public enum MarkdownExport {
+    /// `yyyy-MM-dd_HHmmss.md` from when the note was created, so it stays stable when the title changes.
     public static func filename(for session: Session) -> String {
-        let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let illegal = CharacterSet(charactersIn: "/\\:*?\"<>|#^[]\n\r\t")
-        let clean = title.components(separatedBy: illegal).joined(separator: " ")
-            .split(separator: " ").joined(separator: " ")
-        return "\(dateString(session.createdAt)) \(clean.isEmpty ? "Untitled meeting" : String(clean.prefix(100))).md"
+        format(session.createdAt, "yyyy-MM-dd_HHmmss") + ".md"
     }
 
     public static func document(session: Session, template: MeetingTemplate?) -> String {

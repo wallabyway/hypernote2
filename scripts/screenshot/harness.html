@@ -2,6 +2,15 @@
 <!-- Renders web/ with sample data and a stubbed native bridge. Used only to generate docs screenshots. -->
 <html><head><meta charset="utf-8"><link rel="stylesheet" href="../../web/app.css"></head>
 <body><div id="app"></div><div id="toasts"></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <filter id="pele-paper-shadow" x="-20%" y="-30%" width="150%" height="180%" color-interpolation-filters="sRGB">
+    <feDropShadow dx="0" dy="0.5" stdDeviation="0.5" flood-color="#000" flood-opacity="0.18"/>
+    <feDropShadow dx="3" dy="4" stdDeviation="2.5" flood-color="#000" flood-opacity="0.25"/>
+  </filter>
+  <filter id="pele-paper-sheet" x="-5%" y="-5%" width="110%" height="115%" color-interpolation-filters="sRGB">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.08"/>
+  </filter>
+</svg>
 <script>
 const now = Date.now();
 const iso = (min) => new Date(now - min * 60000).toISOString();
@@ -29,8 +38,16 @@ const sessions = {
     summaryTemplateId: "daily-standup",
   },
 };
+sessions.s5 = {
+  id: "s5", title: "Q4 launch planning", createdAt: iso(70), updatedAt: iso(40), notes: "launch slips a week?", templateId: "general",
+  status: "done", error: null, durationSec: 1980, hasAudio: true, speakerNames: { A: "Maya", B: "Raj", C: "Dana" },
+  utterances: [{ speaker: "A", text: "Let's plan the launch.", startMs: 0, endMs: 3000 }],
+  summary: "## Overview\nMaya, Raj and Dana planned the Q4 launch. The billing API ships first; the pricing page waits on legal, so launch moves to Nov 12.\n\n## Visual Summary\n```mermaid\nflowchart LR\n  subgraph Ship[\"Ready to ship\"]\n    A[\"fa:fa-check Billing API\"]\n    B[\"fa:fa-check Onboarding emails\"]\n  end\n  subgraph Blocked[\"Blocked\"]\n    C[\"fa:fa-warning Pricing page\"]\n  end\n  A -->|\"review by Thu\"| R[\"fa:fa-user Raj\"]\n  C -->|\"waiting on\"| L[\"Legal\"]\n  L -->|\"follow up\"| M[\"Maya\"]\n  B --> D[\"Dana\"]\n  R --> G([\"fa:fa-flag Launch Nov 12\"])\n  M --> G\n  D --> G\n```\nWhat feeds the launch, who owns each piece, and the one blocker.\n\n## Key Points\n- **Raj:** billing API is done and in review.\n- **Maya:** legal has the pricing page copy; no reply yet.\n- **Dana:** onboarding emails are drafted.\n\n## Decisions\n- Launch moves from Nov 5 to Nov 12.\n\n## Action Items\n| Owner | Task | Due |\n|---|---|---|\n| Raj | Get the billing API reviewed | Thu |\n| Maya | Chase legal on pricing copy | Wed |\n| Dana | Schedule onboarding emails | Nov 10 |",
+  summaryTemplateId: "general",
+};
 const list = [
   { id: "s1", title: "Platform team standup", createdAt: iso(25), status: "done", templateId: "daily-standup", durationSec: 612, snippet: "Updates by Person Maya Facilitated the standup" },
+  { id: "s5", title: "Q4 launch planning", createdAt: iso(70), status: "done", templateId: "general", durationSec: 1980, snippet: "Overview Maya, Raj and Dana planned the Q4 launch" },
   { id: "s2", title: "Acme Corp demo", createdAt: iso(60 * 5), status: "done", templateId: "customer-demo", durationSec: 2400, snippet: "Attendees & Context Acme Corp: Dana (VP Ops)" },
   { id: "s3", title: "Onboarding ideas brainstorm", createdAt: iso(60 * 29), status: "done", templateId: "brainstorming", durationSec: 1800, snippet: "Goal Reduce time-to-first-note for new users" },
   { id: "s4", title: "1-1 with Priya", createdAt: iso(60 * 24 * 3), status: "done", templateId: "one-on-one", durationSec: 1500, snippet: "Overview Weekly check-in on roadmap and growth" },
@@ -40,7 +57,8 @@ window.webkit = { messageHandlers: { native: { postMessage: async ({ cmd, args }
     settings: { captureSystemAudio: true, defaultTemplateId: "general", deepseekModel: "deepseek-flash" },
     export: { folder: "/Users/you/Documents/Work Notes/Meetings", isCustom: false, vault: "Work Notes", detectedVault: "Work Notes" } };
   if (cmd === "exportSummary") {
-    const d = new Date(sessions.s1.createdAt), name = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} Platform team standup.md`;
+    const d = new Date(sessions.s1.createdAt), p = (n) => String(n).padStart(2, "0");
+    const name = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.md`;
     return { path: "/Users/you/Documents/Work Notes/Meetings/" + name, name, vault: "Work Notes" };
   }
   if (cmd === "listSessions") return list;
@@ -48,5 +66,6 @@ window.webkit = { messageHandlers: { native: { postMessage: async ({ cmd, args }
   return null;
 } } } };
 </script>
+<script src="../../web/vendor/pele.global.js"></script>
 <script src="../../web/markdown.js"></script>
 <script src="../../web/app.js"></script></body></html>

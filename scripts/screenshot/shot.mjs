@@ -26,6 +26,15 @@ await page.click('[data-tab="transcript"]');
 await page.waitForSelector(".utt");
 await page.screenshot({ path: path.join(docs, "screenshot-transcript.png") });
 
+// General Meeting summary with a Pele-drawn Mermaid diagram and an action-item table.
+await page.click('.item[data-id="s5"]');
+await page.waitForSelector("#summary-body .diagram.drawn svg");
+await page.screenshot({ path: path.join(docs, "screenshot-diagram.png") });
+await page.evaluate(() => { const sc = document.querySelector("#main .scroll"); sc.scrollTop = sc.scrollHeight; });
+await page.screenshot({ path: path.join(docs, "screenshot-table.png") });
+await page.click('.item[data-id="s1"]');
+await page.waitForSelector(".md");
+
 // Obsidian export: the button on the summary plus its confirmation toast...
 await page.click('[data-tab="summary"]');
 await page.waitForSelector("#export-summary");

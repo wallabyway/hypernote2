@@ -134,6 +134,47 @@ select.chip { appearance: none; -webkit-appearance: none; padding-right: 8px; cu
 .md li { margin: 2px 0; }
 .md code { background: var(--muted); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
 .md a { color: inherit; text-decoration: underline; }
+.md pre.code { background: var(--muted); border-radius: var(--radius); padding: 10px 12px; margin: 10px 0; overflow-x: auto;
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+.md pre.code code { background: none; padding: 0; }
+/* Tables in the pele.run docs style: rules between rows only, quiet headers, a stronger first column. */
+.md .table-wrap { overflow-x: auto; margin: 16px 0; }
+.md table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.md th, .md td { border-bottom: 1px solid var(--border); padding: 11px 14px; text-align: left; vertical-align: top; }
+.md th:first-child, .md td:first-child { padding-left: 0; }
+.md th { color: var(--muted-foreground); font-size: 13px; font-weight: 400; }
+.md td:first-child { font-weight: 600; white-space: nowrap; }
+.md tbody tr:last-child td { border-bottom: 0; }
+.md .diagram { margin: 14px 0 8px; display: flex; justify-content: center; }
+.md .diagram > svg { max-width: 100%; height: auto; overflow: visible; }
+.md .diagram:not(.drawn) .diagram-src, .md .diagram.failed .diagram-src { display: block; width: 100%; background: var(--muted);
+  border-radius: var(--radius); padding: 10px 12px; font: 12.5px/1.5 ui-monospace, Menlo, monospace; white-space: pre; overflow-x: auto; }
+.md .diagram.failed { flex-direction: column; }
+.diagram-error { color: var(--muted-foreground); font-size: 12px; margin-top: 4px; }
+
+/* Pele "paper" style: stock Pele, themed only through its CSS variables and class hooks
+   (obsidianmd/pele#24). White paper cards with a soft drop shadow. WebKit draws no CSS
+   drop-shadow() on SVG shapes, so the shadow is an SVG filter (#pele-paper-shadow, index.html). */
+.pele {
+  --pele-bg: #ffffff;
+  --pele-fg: #1d1c1a;
+  --pele-muted: #76716a;
+  --pele-line: #3f3c37;
+  --pele-surface: #ffffff;
+  --pele-surface-alt: #f8f6f0;
+  --pele-border: #ddd8cc;
+  --pele-accent: #2f63ad;
+  --pele-radius: 8px;
+  --pele-font: var(--font);
+  --pele-drop-shadow: url(#pele-paper-shadow);
+  background: var(--pele-bg);
+  border-radius: 12px;
+}
+.pele-node { filter: var(--pele-drop-shadow); }
+.pele-cluster > rect { filter: url(#pele-paper-sheet); }
+@media (prefers-color-scheme: dark) {
+  .md .diagram > svg.pele { box-shadow: 0 0 0 1px rgba(255,255,255,.06); }
+}
 .caret > :last-child::after { content: "▍"; animation: pulse 1s infinite; margin-left: 2px; }
 
 /* Transcript */

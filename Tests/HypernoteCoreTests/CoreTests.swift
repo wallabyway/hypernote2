@@ -81,6 +81,15 @@ final class PromptTests: XCTestCase {
         XCTAssertTrue(msgs.system.contains("## Title"))
     }
 
+    func testGeneralTemplateAsksForDiagramAndActionTable() {
+        let titles = BuiltInTemplates.general.sections.map(\.title)
+        XCTAssertEqual(titles, ["Overview", "Visual Summary", "Key Points", "Decisions", "Action Items"])
+        XCTAssertTrue(BuiltInTemplates.general.sections[1].description.contains("Mermaid"))
+        XCTAssertTrue(BuiltInTemplates.general.sections[4].description.contains("Owner | Task | Due"))
+        XCTAssertTrue(Prompts.systemPrompt.contains("```mermaid"))
+        XCTAssertTrue(Prompts.systemPrompt.contains("fa:fa-check"))
+    }
+
     func testBuiltInTemplatesCoverRequestedMeetingTypes() {
         let ids = Set(BuiltInTemplates.all.map(\.id))
         XCTAssertTrue(ids.isSuperset(of: ["one-on-one", "brainstorming", "daily-standup", "customer-demo"]))

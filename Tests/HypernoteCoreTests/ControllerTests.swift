@@ -176,7 +176,8 @@ final class ControllerTests: XCTestCase {
 
         let r = try await controller.handle(command: "exportSummary", args: ["id": "x"]) as! [String: Any]
         let text = try String(contentsOfFile: r["path"] as! String, encoding: .utf8)
-        XCTAssertTrue((r["name"] as! String).hasSuffix("Standup API pricing.md"), r["name"] as! String)
+        XCTAssertEqual(r["name"] as? String, MarkdownExport.filename(for: s))
+        XCTAssertNotNil((r["name"] as! String).range(of: #"^\d{4}-\d{2}-\d{2}_\d{6}\.md$"#, options: .regularExpression))
         XCTAssertTrue(text.hasPrefix("---\ntitle: \"Standup: API / pricing\""))
         XCTAssertTrue(text.contains("speakers: [\"Maya\", \"Speaker B\"]"))
         XCTAssertTrue(text.contains("template: \"Daily Standup\""))

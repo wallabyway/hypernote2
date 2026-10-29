@@ -4,13 +4,14 @@ public enum BuiltInTemplates {
     public static let general = MeetingTemplate(
         id: "general",
         title: "General Meeting",
-        description: "A balanced summary for any conversation.",
+        description: "A balanced summary for any conversation, with a diagram of how it fits together.",
         icon: "📝",
         sections: [
             .init(title: "Overview", description: "Two or three sentences: who met, why, and the main outcome."),
+            .init(title: "Visual Summary", description: "One Mermaid diagram (two at most) that makes the meeting easy to grasp at a glance. Pick the type that fits what was said: a flowchart from topics to decisions to owners and actions, a mindmap of themes, a timeline of dates and milestones, a sequenceDiagram of hand-offs between people, or a gantt chart when tasks have dates. Add one short sentence under it saying what it shows."),
             .init(title: "Key Points", description: "The most important topics discussed, as bullets, attributed to speakers where it matters."),
             .init(title: "Decisions", description: "Decisions that were made. Omit nothing that was agreed."),
-            .init(title: "Action Items", description: "One bullet per follow-up in the form 'Owner: task (due date if mentioned)'."),
+            .init(title: "Action Items", description: "A Markdown table with the columns Owner | Task | Due (write '—' when no date was given), one row per follow-up. Write 'None discussed.' instead of a table if there are none."),
         ],
         builtIn: true
     )

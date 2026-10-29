@@ -31,6 +31,10 @@ final class AppModel: ObservableObject {
         controller.onRecordingChange = { [weak self] recording in self?.isRecording = recording }
         loadUI()
 
+        // Re-registering moves an enabled login item to this copy of the app, so it keeps
+        // working after the app is reinstalled or moved (e.g. from ./build into /Applications).
+        if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.register() }
+
         // The user can also toggle the login item in System Settings; re-read it whenever a menu opens.
         NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil,
                                                queue: .main) { [weak self] _ in

@@ -40,3 +40,13 @@ codesign --force --deep --sign - "$APP"
 
 echo "Built $APP"
 du -sh "$APP"
+
+# --install: replace /Applications/Hypernote2.app with this build and relaunch it.
+if [[ "${1:-}" == "--install" ]]; then
+  pkill -x Hypernote2 || true
+  sleep 1
+  rm -rf /Applications/Hypernote2.app
+  ditto "$APP" /Applications/Hypernote2.app
+  open /Applications/Hypernote2.app
+  echo "Installed /Applications/Hypernote2.app"
+fi

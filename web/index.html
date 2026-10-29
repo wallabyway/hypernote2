@@ -9,6 +9,17 @@
 <body>
   <div id="app"></div>
   <div id="toasts"></div>
+  <!-- Shared shadows for Pele diagrams (see .pele in app.css). -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <filter id="pele-paper-shadow" x="-20%" y="-30%" width="150%" height="180%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="0.5" stdDeviation="0.5" flood-color="#000" flood-opacity="0.18"/>
+      <feDropShadow dx="3" dy="4" stdDeviation="2.5" flood-color="#000" flood-opacity="0.25"/>
+    </filter>
+    <filter id="pele-paper-sheet" x="-5%" y="-5%" width="110%" height="115%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.08"/>
+    </filter>
+  </svg>
+  <script src="vendor/pele.global.js"></script>
   <script src="markdown.js"></script>
   <script src="app.js"></script>
 </body>

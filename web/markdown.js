@@ -1,4 +1,6 @@
-// Minimal, safe Markdown renderer for LLM summaries (headings, lists, bold/italic/code, links).
+// Minimal, safe Markdown renderer for LLM summaries (headings, lists, bold/italic/code, links,
+// fenced code, tables). ```mermaid blocks become <div class="diagram"> placeholders that app.js
+// draws with Pele; until a block is closed (while streaming) it shows as code.
 (function (root) {
   function esc(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -13,11 +15,15 @@
     return s;
   }
 
+  const cells = (row) => row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  const isDivider = (row) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(row || "");
+
   function renderMarkdown(src) {
     const lines = String(src || "").replace(/\r\n/g, "\n").split("\n");
     const out = [];
     const stack = []; // open lists: {type, indent}
     let para = [];
+    let fence = null; // {lang, body: []}
 
     const flushPara = () => {
       if (para.length) out.push("<p>" + inline(para.join(" ")) + "</p>");
@@ -29,9 +35,38 @@
       }
     };
 
-    for (const raw of lines) {
+    const codeBlock = (f, closed) => {
+      const body = f.body.join("\n");
+      if (closed && f.lang === "mermaid") {
+        return `<div class="diagram"><pre class="diagram-src">${esc(body)}</pre></div>`;
+      }
+      return `<pre class="code"><code>${esc(body)}</code></pre>`;
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      if (fence) {
+        if (/^\s*```\s*$/.test(raw)) { out.push(codeBlock(fence, true)); fence = null; }
+        else fence.body.push(raw);
+        continue;
+      }
       const line = raw.replace(/\s+$/, "");
+      const open = /^\s*```\s*([\w-]*)/.exec(line);
+      if (open) { flushPara(); closeLists(0); fence = { lang: open[1].toLowerCase(), body: [] }; continue; }
       if (!line.trim()) { flushPara(); closeLists(0); continue; }
+
+      if (/^\s*\|/.test(line) && isDivider(lines[i + 1])) {
+        flushPara(); closeLists(0);
+        const head = cells(line);
+        let html = "<div class=\"table-wrap\"><table><thead><tr>" + head.map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead><tbody>";
+        i += 1;
+        while (i + 1 < lines.length && /^\s*\|/.test(lines[i + 1])) {
+          const row = cells(lines[++i]);
+          html += "<tr>" + head.map((_, j) => `<td>${inline(row[j] || "")}</td>`).join("") + "</tr>";
+        }
+        out.push(html + "</tbody></table></div>");
+        continue;
+      }
 
       const h = /^(#{1,3})\s+(.*)$/.exec(line);
       if (h) {
@@ -64,6 +99,7 @@
       para.push(line.trim());
     }
     flushPara(); closeLists(0);
+    if (fence) out.push(codeBlock(fence, false));
     return out.join("");
   }
 

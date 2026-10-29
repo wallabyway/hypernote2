@@ -81,6 +81,46 @@
   const isBusy = (s) => ["uploading", "transcribing", "summarizing"].includes(s.status);
   const home = (p) => String(p || "").replace(/^\/Users\/[^/]+/, "~");
   const exportLabel = () => (S.boot.export && S.boot.export.vault ? "Save to Obsidian" : "Save .md");
+  // ---------- diagrams: Mermaid drawn by stock Pele, paper style from app.css ----------
+  // Lucide icons (ISC) for `fa:fa-<name>` in diagram labels, as suggested in obsidianmd/pele#24.
+  const LUCIDE = {
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    calendar: '<rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+    flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/>',
+    warning: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  };
+  const iconFor = (name) => LUCIDE[String(name).replace(/^fa:fa-/, "").replace(/^fa:/, "")] || null;
+  const diagramCache = new Map(); // "width|source" -> svg, so streaming re-renders stay cheap
+
+  /** Replaces each .diagram placeholder under root with an SVG. Keeps the source if it can't be drawn. */
+  function drawDiagrams(root) {
+    if (!root || !window.pele) return;
+    root.querySelectorAll(".diagram:not(.drawn)").forEach((el) => {
+      const src = el.querySelector(".diagram-src");
+      if (!src) return;
+      const text = src.textContent;
+      const width = Math.max(280, Math.round(el.clientWidth || root.clientWidth || 640));
+      const key = width + "|" + text;
+      try {
+        let svg = diagramCache.get(key);
+        if (!svg) {
+          svg = window.pele.render(text, { maxWidth: width, links: false, images: false, icons: iconFor }).svg;
+          if (diagramCache.size > 50) diagramCache.clear();
+          diagramCache.set(key, svg);
+        }
+        el.innerHTML = svg;
+        el.classList.add("drawn");
+      } catch (e) {
+        el.classList.add("drawn", "failed");
+        el.insertAdjacentHTML("beforeend", `<div class="diagram-error">Couldn't draw this diagram: ${esc(String(e && e.message ? e.message : e).slice(0, 200))}</div>`);
+      }
+    });
+  }
+
   const speakerName = (s, label) => (s.speakerNames && s.speakerNames[label]) || `Speaker ${label}`;
 
   // ---------- data ----------
@@ -194,6 +234,7 @@
     else el.innerHTML = noteHTML();
 
     bindMain();
+    if (S.view === "note" && S.cur && S.tab === "summary") drawDiagrams($("#summary-body"));
     if (focusId) {
       const n = document.getElementById(focusId);
       if (n) { n.focus(); if (sel != null && n.setSelectionRange && n.type !== "password") try { n.setSelectionRange(sel, sel); } catch (_) {} }
@@ -495,7 +536,7 @@
       if (S.cur && S.cur.id === payload.id) {
         S.cur.summary = (S.cur.summary || "") + payload.text;
         const body = $("#summary-body");
-        if (body && S.tab === "summary") body.innerHTML = window.renderMarkdown(S.cur.summary);
+        if (body && S.tab === "summary") { body.innerHTML = window.renderMarkdown(S.cur.summary); drawDiagrams(body); }
         else if (S.tab === "summary" && S.view === "note") renderMain();
       }
     } else if (name === "tick") {
