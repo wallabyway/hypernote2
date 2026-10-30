@@ -35,8 +35,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-# Ad-hoc signature keeps microphone/screen permissions stable between launches.
-codesign --force --deep --sign - "$APP"
+# Sign with a stable identity so macOS privacy grants (Microphone, System Audio Recording) survive
+# rebuilds. Ad-hoc signatures change every build, which silently revokes those permissions.
+IDENTITY="Hypernote2 Local Signing"
+if ! security find-identity -p codesigning | grep -q "$IDENTITY"; then
+  ./scripts/create-signing-cert.sh || true
+fi
+if security find-identity -p codesigning | grep -q "$IDENTITY"; then
+  codesign --force --deep --options runtime --sign "$IDENTITY" \
+    --entitlements Resources/Hypernote2.entitlements "$APP"
+else
+  echo "warning: signing ad-hoc; permissions will reset on every rebuild" >&2
+  codesign --force --deep --sign - --entitlements Resources/Hypernote2.entitlements "$APP"
+fi
 
 echo "Built $APP"
 du -sh "$APP"

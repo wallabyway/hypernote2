@@ -20,7 +20,7 @@
     tab: "summary",
     view: "loading",       // loading | setup | note | settings
     search: "",
-    rec: { id: null, seconds: 0, level: 0 },
+    rec: { id: null, seconds: 0, level: 0, paused: false, auto: false },
     confirmDelete: null,
     editingSpeaker: null,
     editTemplate: null,
@@ -277,8 +277,10 @@
         <button class="btn primary" id="save-keys">Verify and save</button>
         <div class="help" id="setup-status" style="margin-top:8px"></div></div>
       <div class="section"><h2>Recording</h2>
-        <div class="row"><div><b>Capture other participants</b><div class="help">Also records system audio (Zoom, Meet, Teams…). Needs Screen &amp; System Audio Recording permission.</div></div>
+        <div class="row"><div><b>Capture other participants</b><div class="help">Also records system audio (Zoom, Meet, Teams…). Needs System Audio Recording permission.</div></div>
           <button class="switch ${set.captureSystemAudio ? "on" : ""}" id="sys-toggle" aria-label="Capture system audio"></button></div>
+        <div class="row" style="margin-top:14px"><div><b>Auto-pause when quiet</b><div class="help">Pauses after 30 seconds with no one speaking and resumes when someone talks. Applies to the next recording.</div></div>
+          <button class="switch ${set.autoPause !== false ? "on" : ""}" id="autopause-toggle" aria-label="Auto-pause when quiet"></button></div>
         <div class="field" style="margin-top:14px"><label>Default template</label>
           <select id="default-tpl">${b.templates.map((t) => `<option value="${esc(t.id)}" ${t.id === set.defaultTemplateId ? "selected" : ""}>${esc(t.icon)} ${esc(t.title)}</option>`).join("")}</select></div></div>
       ${exportSettingsHTML()}
@@ -340,7 +342,13 @@
   function listenHTML(recordingThis) {
     const s = S.cur;
     if (recordingThis) {
-      return `<button class="listen live" id="stop-btn"><span class="stop"></span>Stop <span class="bars" id="bars">${"<i></i>".repeat(5)}</span><span class="time" id="rec-time">${fmtClock(S.rec.seconds)}</span></button>`;
+      const { paused, auto } = S.rec;
+      const pause = paused
+        ? `<button class="listen round" id="resume-btn" title="Resume recording" aria-label="Resume recording"><span class="play"></span></button>`
+        : `<button class="listen round" id="pause-btn" title="Pause recording" aria-label="Pause recording"><span class="pause"></span></button>`;
+      const hint = !paused ? ""
+        : `<div class="listen-hint">${auto ? "Auto-paused: no one is speaking. Resumes when someone talks." : "Paused. Press play to resume."}</div>`;
+      return `<div class="listen-bar">${hint}<div class="listen-row">${pause}<button class="listen ${paused ? "paused" : "live"}" id="stop-btn" title="Stop and transcribe"><span class="stop"></span>Stop <span class="bars" id="bars">${"<i></i>".repeat(5)}</span><span class="time" id="rec-time">${fmtClock(S.rec.seconds)}</span></button></div></div>`;
     }
     if (s.hasAudio || isBusy(s)) return "";
     if (S.rec.id) return `<button class="listen" disabled><span class="rec-dot"></span>Recording in another note</button>`;
@@ -411,6 +419,9 @@
     on("#sys-toggle", async () => {
       try { S.boot = await native("setSettings", { captureSystemAudio: !S.boot.settings.captureSystemAudio }); renderMain(); } catch (e) { fail(e); }
     });
+    on("#autopause-toggle", async () => {
+      try { S.boot = await native("setSettings", { autoPause: S.boot.settings.autoPause === false }); renderMain(); } catch (e) { fail(e); }
+    });
     const dt = $("#default-tpl");
     if (dt) dt.onchange = async () => { try { S.boot = await native("setSettings", { defaultTemplateId: dt.value }); } catch (e) { fail(e); } };
     on("#export-choose", async () => { try { S.boot = await native("chooseExportFolder"); renderMain(); } catch (e) { fail(e); } });
@@ -432,11 +443,13 @@
     };
     on("#reveal", () => native("revealAudio", { id: s.id }));
     on("#start-btn", async () => {
-      try { S.boot = await native("startRecording", { id: s.id }); S.rec = { id: s.id, seconds: 0, level: 0 }; S.tab = "notes"; await refreshCur(); } catch (e) { fail(e); }
+      try { S.boot = await native("startRecording", { id: s.id }); S.rec = { id: s.id, seconds: 0, level: 0, paused: false, auto: false }; S.tab = "notes"; await refreshCur(); } catch (e) { fail(e); }
     });
     on("#stop-btn", async () => {
-      try { await native("stopRecording"); S.rec = { id: null, seconds: 0, level: 0 }; S.boot.recordingSessionId = null; S.tab = "summary"; await refreshCur(); } catch (e) { fail(e); }
+      try { await native("stopRecording"); S.rec = { id: null, seconds: 0, level: 0, paused: false, auto: false }; S.boot.recordingSessionId = null; S.tab = "summary"; await refreshCur(); } catch (e) { fail(e); }
     });
+    on("#pause-btn", () => native("pauseRecording").catch(fail));
+    on("#resume-btn", () => native("resumeRecording").catch(fail));
     const summarize = async () => { try { await native("summarize", { id: s.id, templateId: s.templateId }); S.tab = "summary"; } catch (e) { fail(e); } };
     on("#gen-btn", summarize);
     on("#regen-btn", summarize);
@@ -546,10 +559,16 @@
       const bars = document.querySelectorAll("#bars i");
       const v = Math.min(1, payload.value * 8);
       bars.forEach((b, i) => (b.style.height = 3 + Math.round(15 * v * (0.55 + 0.45 * Math.sin(Date.now() / 120 + i * 1.7) ** 2)) + "px"));
+    } else if (name === "paused") {
+      if (S.rec.id === payload.id) {
+        S.rec.paused = payload.paused;
+        S.rec.auto = payload.paused && payload.auto;
+        if (S.view === "note" && S.cur && S.cur.id === payload.id) renderMain();
+      }
     } else if (name === "toast") {
       toast(payload.message, payload.kind);
     } else if (name === "navigate") {
-      S.rec = { id: payload.id, seconds: 0, level: 0 };
+      S.rec = { id: payload.id, seconds: 0, level: 0, paused: false, auto: false };
       refreshList().then(() => openSession(payload.id)).catch(fail);
     }
   };
@@ -565,7 +584,10 @@
     renderSidebar();
     try {
       S.boot = await native("state");
-      if (S.boot.recordingSessionId) S.rec.id = S.boot.recordingSessionId;
+      if (S.boot.recordingSessionId) {
+        S.rec = { id: S.boot.recordingSessionId, seconds: S.boot.recordedSeconds || 0, level: 0,
+                  paused: !!S.boot.recordingPaused, auto: !!S.boot.recordingAutoPaused };
+      }
       await refreshList();
       if (!S.boot.hasAssemblyKey || !S.boot.hasDeepseekKey) { S.view = "setup"; render(); return; }
       S.view = "note";

@@ -85,6 +85,8 @@ The transcript tab still has a **Copy** button for the plain-text transcript.
 ## How it works
 
 1. **Start recording** (window button or menu bar). Microphone audio, plus system audio if you allow it, is mixed into a mono 16 kHz AAC file (about 14 MB/hour).
+   - **Pause** with the button next to Stop (or from the menu bar). Paused time isn't recorded.
+   - **Auto-pause**: after 30 seconds with no one speaking, recording pauses on its own and resumes when someone talks, keeping the second before so the first words aren't cut off. You can turn this off in Settings.
 2. **Stop** uploads the file to AssemblyAI, which returns diarized utterances.
 3. DeepSeek turns the transcript, your notes and the note's template into a Markdown summary, then suggests a title.
 
@@ -95,7 +97,9 @@ Data lives in `~/Library/Application Support/Hypernote2/` (one JSON file and `au
 ## Permissions
 
 - **Microphone** (required).
-- **Screen & System Audio Recording** (optional): lets Hypernote2 capture the other side of calls. Without it, only your microphone is recorded and the app tells you so.
+- **System Audio Recording Only** (optional, under Privacy & Security → Screen & System Audio Recording): lets Hypernote2 capture the other side of calls through a Core Audio process tap (macOS 14.2+). It does not need Screen Recording. Without it, only your microphone is recorded and the app tells you so.
+
+`scripts/build-app.sh` signs the app with a self-signed "Hypernote2 Local Signing" certificate, which it creates on the first build via `scripts/create-signing-cert.sh`. With ad-hoc signing, every rebuild quietly revoked these permissions.
 
 ## Regenerating the screenshots
 

@@ -77,13 +77,90 @@ final class PCMResampler {
     }
 }
 
+/// Energy-based voice detector fed with ~250 ms chunks. Adapts to the room's noise floor so
+/// a fan or hum doesn't count as speech.
+struct VoiceActivity {
+    static let minimumThreshold: Float = 0.01   // ≈ -40 dBFS RMS; normal speech sits well above
+    private(set) var noiseFloor: Float = 0.002
+
+    mutating func isVoice(_ rms: Float) -> Bool {
+        let voice = rms > max(Self.minimumThreshold, noiseFloor * 4)
+        if rms < noiseFloor {
+            noiseFloor = noiseFloor * 0.9 + rms * 0.1        // fall quickly
+        } else if !voice {
+            noiseFloor = noiseFloor * 0.995 + rms * 0.005    // rise slowly
+        }
+        noiseFloor = max(noiseFloor, 0.0005)
+        return voice
+    }
+}
+
+/// Manual pause plus auto-pause after a stretch of silence (auto-resumes when speech returns).
+struct PauseLogic {
+    enum Event: Equatable { case none, autoPaused, autoResumed }
+
+    var autoPauseEnabled: Bool
+    let autoPauseFrames: Int
+    private(set) var manualPaused = false
+    private(set) var autoPaused = false
+    private var framesSeen = 0
+    private var lastVoiceFrame = 0
+    private var recentVoice: [Bool] = []
+    private var vad = VoiceActivity()
+
+    var isPaused: Bool { manualPaused || autoPaused }
+
+    init(autoPauseEnabled: Bool, autoPauseSeconds: Double, sampleRate: Double = 16_000) {
+        self.autoPauseEnabled = autoPauseEnabled
+        self.autoPauseFrames = Int(autoPauseSeconds * sampleRate)
+    }
+
+    mutating func pause() { manualPaused = true }
+
+    /// Manual resume also clears an auto-pause and restarts the silence countdown.
+    mutating func resume() {
+        manualPaused = false
+        autoPaused = false
+        lastVoiceFrame = framesSeen
+        recentVoice.removeAll()
+    }
+
+    /// Feed one chunk; returns whether this chunk flipped the auto-pause state.
+    mutating func process(rms: Float, frames: Int) -> Event {
+        framesSeen += frames
+        let voice = vad.isVoice(rms)
+        if voice { lastVoiceFrame = framesSeen }
+        recentVoice.append(voice)
+        if recentVoice.count > 4 { recentVoice.removeFirst() }
+
+        if autoPaused && !manualPaused {
+            // Two voiced chunks within ~1 s, so a single click or cough doesn't resume.
+            if recentVoice.filter({ $0 }).count >= 2 {
+                autoPaused = false
+                return .autoResumed
+            }
+        } else if !isPaused && autoPauseEnabled && framesSeen - lastVoiceFrame >= autoPauseFrames {
+            autoPaused = true
+            return .autoPaused
+        }
+        return .none
+    }
+}
+
 /// Records microphone (+ optionally system audio) into one mono AAC file.
 ///
 /// The microphone is the master clock: every 250 ms we write exactly as many frames as the
 /// microphone delivered, mixing in whatever system audio is available.
 public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     public var onLevel: ((Float) -> Void)?
+    /// Called on a background queue when recording pauses/resumes. `auto` = triggered by silence detection.
+    public var onPauseChange: ((_ paused: Bool, _ auto: Bool) -> Void)?
+    public static let autoPauseSeconds: Double = 30
     public private(set) var systemAudioActive = false
+    /// Why system audio isn't being captured (nil when it is, or when it wasn't requested).
+    public private(set) var systemAudioProblem: SystemAudioProblem?
+
+    public enum SystemAudioProblem { case permissionDenied, failed(String) }
 
     private let engine = AVAudioEngine()
     private let micQueue = SampleQueue()
@@ -93,11 +170,45 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var file: AVAudioFile?
     private var timer: DispatchSourceTimer?
     private var stream: SCStream?
+    private var tap: AnyObject?   // SystemAudioTap (macOS 14.2+)
     private let writeQueue = DispatchQueue(label: "hypernote2.recorder.write")
     private let sysQueueGCD = DispatchQueue(label: "hypernote2.recorder.system")
     private var framesWritten = 0
+    private var pauseLogic: PauseLogic
+    /// Audio from just before an auto-resume, so the first words aren't cut off.
+    private var preRoll: [[Float]] = []
+    private let statsLock = NSLock()
+    private var recordedFrames = 0
 
-    public override init() { super.init() }
+    public init(autoPause: Bool = true) {
+        pauseLogic = PauseLogic(autoPauseEnabled: autoPause, autoPauseSeconds: Self.autoPauseSeconds)
+        super.init()
+    }
+
+    /// Seconds of audio written so far (excludes paused time).
+    public var recordedSeconds: Double {
+        statsLock.lock(); defer { statsLock.unlock() }
+        return Double(recordedFrames) / 16_000
+    }
+
+    public func pause() {
+        writeQueue.async {
+            guard !self.pauseLogic.manualPaused else { return }
+            let wasPaused = self.pauseLogic.isPaused
+            self.pauseLogic.pause()
+            if !wasPaused { self.preRoll.removeAll() }
+            self.onPauseChange?(true, false)
+        }
+    }
+
+    public func resume() {
+        writeQueue.async {
+            guard self.pauseLogic.isPaused else { return }
+            self.pauseLogic.resume()
+            self.preRoll.removeAll()
+            self.onPauseChange?(false, false)
+        }
+    }
 
     public static func requestMicrophoneAccess() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -136,8 +247,10 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             do {
                 try await startSystemAudio()
                 systemAudioActive = true
+            } catch HypernoteError.message(let m) where m == Self.deniedMarker {
+                systemAudioProblem = .permissionDenied   // mic-only fallback
             } catch {
-                systemAudioActive = false   // mic-only fallback; caller can read `systemAudioActive`
+                systemAudioProblem = .failed(error.localizedDescription)
             }
         }
 
@@ -154,6 +267,8 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         engine.stop()
         if let stream { try? await stream.stopCapture() }
         stream = nil
+        if #available(macOS 14.2, *) { (tap as? SystemAudioTap)?.stop() }
+        tap = nil
         timer?.cancel()
         timer = nil
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
@@ -165,29 +280,75 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func flush() {
         let n = micQueue.count
-        guard n > 0, let file else { return }
+        guard n > 0, file != nil else { return }
         let mic = micQueue.take(n)
         let sys = sysQueue.take(n)
         sysQueue.trim(keep: 16_000)   // never let system audio drift more than 1 s behind
         let mixed = AudioMixer.mix(mic, sys, count: n)
+        let rms = AudioMixer.rms(mixed)
+        onLevel?(rms)
 
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(n)) else { return }
+        switch pauseLogic.process(rms: rms, frames: n) {
+        case .autoPaused:
+            preRoll.removeAll()
+            onPauseChange?(true, true)
+        case .autoResumed:
+            preRoll.forEach(write)
+            preRoll.removeAll()
+            onPauseChange?(false, true)
+        case .none:
+            break
+        }
+
+        if pauseLogic.isPaused {
+            preRoll.append(mixed)
+            while preRoll.reduce(0, { $0 + $1.count }) > 16_000 { preRoll.removeFirst() }   // keep ~1 s
+        } else {
+            write(mixed)
+        }
+    }
+
+    private func write(_ samples: [Float]) {
+        let n = samples.count
+        guard n > 0, let file,
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(n))
+        else { return }
         buffer.frameLength = AVAudioFrameCount(n)
-        mixed.withUnsafeBufferPointer { src in
+        samples.withUnsafeBufferPointer { src in
             buffer.floatChannelData![0].update(from: src.baseAddress!, count: n)
         }
         do {
             try file.write(from: buffer)
             framesWritten += n
+            statsLock.lock(); recordedFrames = framesWritten; statsLock.unlock()
         } catch {
             // Disk errors surface as a short recording; nothing safe to do on the audio thread.
         }
-        onLevel?(AudioMixer.rms(mixed))
     }
 
-    // MARK: System audio (ScreenCaptureKit)
+    // MARK: System audio
+
+    private static let deniedMarker = "system-audio-permission-denied"
 
     private func startSystemAudio() async throws {
+        if #available(macOS 14.2, *) {
+            // Core Audio process tap: only needs "System Audio Recording Only" permission.
+            guard await SystemAudioPermission.request() else {
+                throw HypernoteError.message(Self.deniedMarker)
+            }
+            let tap = SystemAudioTap()
+            try tap.start { [weak self] pcm in
+                guard let self else { return }
+                self.sysQueue.append(self.sysResampler.convert(pcm))
+            }
+            self.tap = tap
+        } else {
+            try await startScreenCaptureAudio()
+        }
+    }
+
+    /// Fallback for macOS 14.0–14.1 (requires Screen Recording permission).
+    private func startScreenCaptureAudio() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else {
             throw HypernoteError.message("No display available for system audio capture.")

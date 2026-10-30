@@ -12,6 +12,7 @@ final class AppModel: ObservableObject {
     let controller = AppController()
     let webView: WKWebView
     @Published var isRecording = false
+    @Published var isPaused = false
     @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     private let bridge = Bridge()
@@ -29,6 +30,7 @@ final class AppModel: ObservableObject {
         bridge.model = self
         controller.onEvent = { [weak self] name, payload in self?.send(event: name, payload: payload) }
         controller.onRecordingChange = { [weak self] recording in self?.isRecording = recording }
+        controller.onPauseChange = { [weak self] paused in self?.isPaused = paused }
         loadUI()
 
         // Re-registering moves an enabled login item to this copy of the app, so it keeps

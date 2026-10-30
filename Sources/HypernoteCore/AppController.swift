@@ -8,6 +8,10 @@ public final class AppController {
     public var onRecordingChange: ((Bool) -> Void)?
     public private(set) var recordingSessionId: String?
     public var isRecording: Bool { recordingSessionId != nil }
+    public private(set) var isPaused = false
+    public private(set) var isAutoPaused = false
+    /// Called whenever recording starts/stops or pauses/resumes.
+    public var onPauseChange: ((Bool) -> Void)?
 
     let store: Store
     let secrets: SecretStore
@@ -45,6 +49,7 @@ public final class AppController {
         case "setSettings":
             var s = store.loadSettings()
             if let v = args["captureSystemAudio"] as? Bool { s.captureSystemAudio = v }
+            if let v = args["autoPause"] as? Bool { s.autoPause = v }
             if let v = args["defaultTemplateId"] as? String { s.defaultTemplateId = v }
             if args["resetExportFolder"] as? Bool == true { s.exportFolder = nil }
             if let v = args["exportFolder"] as? String {
@@ -76,6 +81,12 @@ public final class AppController {
             return state()
         case "stopRecording":
             await stopRecording()
+            return NSNull()
+        case "pauseRecording":
+            pauseRecording()
+            return NSNull()
+        case "resumeRecording":
+            resumeRecording()
             return NSNull()
         case "summarize":
             let id = try requireId(args)
@@ -132,6 +143,9 @@ public final class AppController {
             "settings": (try? json(store.loadSettings())) ?? NSNull(),
             "templates": (try? json(store.allTemplates())) ?? [],
             "recordingSessionId": recordingSessionId ?? NSNull(),
+            "recordingPaused": isPaused,
+            "recordingAutoPaused": isAutoPaused,
+            "recordedSeconds": recorder?.recordedSeconds ?? 0,
             "export": exportInfo(),
         ]
     }
@@ -288,12 +302,16 @@ public final class AppController {
             throw HypernoteError.message("This note already has a recording. Start a new note to record again.")
         }
 
-        let recorder = MeetingRecorder()
+        let settings = store.loadSettings()
+        let recorder = MeetingRecorder(autoPause: settings.autoPause)
         recorder.onLevel = { [weak self] value in
             Task { @MainActor in self?.emit("level", ["value": Double(value)]) }
         }
+        recorder.onPauseChange = { [weak self] paused, auto in
+            Task { @MainActor in self?.setPaused(paused, auto: auto) }
+        }
         try await recorder.start(to: store.audioURL(for: id),
-                                 captureSystemAudio: store.loadSettings().captureSystemAudio)
+                                 captureSystemAudio: settings.captureSystemAudio)
         self.recorder = recorder
         recordingSessionId = id
         recordingStart = Date()
@@ -302,14 +320,23 @@ public final class AppController {
         emit("session", ["id": id])
 
         if store.loadSettings().captureSystemAudio && !recorder.systemAudioActive {
-            emit("toast", ["kind": "warning", "message":
-                "Recording your microphone only. To capture the other side of calls, allow Screen & System Audio Recording for Hypernote2 in System Settings → Privacy & Security."])
+            switch recorder.systemAudioProblem {
+            case .permissionDenied:
+                emit("toast", ["kind": "warning", "message":
+                    "Recording your microphone only. To capture the other side of calls, turn on Hypernote2 under System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only, then start a new recording."])
+                NSWorkspace.shared.open(SystemAudioPermission.settingsURL)
+            case .failed(let reason):
+                emit("toast", ["kind": "warning", "message": "Recording your microphone only. \(reason)"])
+            case nil:
+                break
+            }
         }
 
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, let start = self.recordingStart else { return }
-                self.emit("tick", ["seconds": Date().timeIntervalSince(start)])
+                guard let self, let recorder = self.recorder else { return }
+                // Recorded time, not wall-clock time, so the clock stops while paused.
+                self.emit("tick", ["seconds": recorder.recordedSeconds])
             }
         }
     }
@@ -322,7 +349,10 @@ public final class AppController {
         self.recorder = nil
         recordingSessionId = nil
         recordingStart = nil
+        isPaused = false
+        isAutoPaused = false
         onRecordingChange?(false)
+        onPauseChange?(false)
 
         if duration < 1 {
             update(id) { $0.status = .idle; $0.hasAudio = false }
@@ -334,6 +364,25 @@ public final class AppController {
         update(id) { $0.durationSec = duration; $0.hasAudio = true; $0.status = .uploading }
         emit("session", ["id": id])
         runPipeline(id: id)
+    }
+
+    public func pauseRecording() { recorder?.pause() }
+    public func resumeRecording() { recorder?.resume() }
+
+    public func togglePause() {
+        if isPaused { resumeRecording() } else { pauseRecording() }
+    }
+
+    private func setPaused(_ paused: Bool, auto: Bool) {
+        guard recorder != nil, let id = recordingSessionId else { return }
+        isPaused = paused
+        isAutoPaused = paused && auto
+        onPauseChange?(paused)
+        emit("paused", ["id": id, "paused": paused, "auto": auto])
+        if paused && auto {
+            emit("toast", ["kind": "info", "message":
+                "No one has spoken for \(Int(MeetingRecorder.autoPauseSeconds)) seconds, so recording is paused. It resumes when someone talks."])
+        }
     }
 
     /// Menu-bar shortcut: stop if recording, otherwise start a brand-new note.

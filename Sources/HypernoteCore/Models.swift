@@ -119,8 +119,21 @@ public struct Settings: Codable, Equatable {
     public var deepseekModel: String = "deepseek-flash"
     /// Where "Save to Obsidian" writes Markdown files. nil = auto-detected Obsidian vault.
     public var exportFolder: String?
+    /// Pause automatically after 30 s without speech; resume when someone talks again.
+    public var autoPause: Bool = true
 
     public init() {}
+
+    // Missing keys fall back to defaults, so adding a setting never resets the others.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Settings()
+        captureSystemAudio = try c.decodeIfPresent(Bool.self, forKey: .captureSystemAudio) ?? d.captureSystemAudio
+        defaultTemplateId = try c.decodeIfPresent(String.self, forKey: .defaultTemplateId) ?? d.defaultTemplateId
+        deepseekModel = try c.decodeIfPresent(String.self, forKey: .deepseekModel) ?? d.deepseekModel
+        exportFolder = try c.decodeIfPresent(String.self, forKey: .exportFolder)
+        autoPause = try c.decodeIfPresent(Bool.self, forKey: .autoPause) ?? d.autoPause
+    }
 }
 
 public enum HypernoteError: LocalizedError, Equatable {

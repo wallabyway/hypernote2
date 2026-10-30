@@ -39,7 +39,7 @@ struct Hypernote2App: App {
         MenuBarExtra {
             MenuContent(model: model)
         } label: {
-            Image(systemName: model.isRecording ? "record.circle.fill" : "waveform")
+            Image(systemName: model.isRecording ? (model.isPaused ? "pause.circle.fill" : "record.circle.fill") : "waveform")
         }
     }
 }
@@ -55,6 +55,11 @@ struct MenuContent: View {
                 let wasRecording = model.isRecording
                 await model.controller.toggleRecordingFromMenu()
                 if !wasRecording { show() }
+            }
+        }
+        if model.isRecording {
+            Button(model.isPaused ? "Resume Recording" : "Pause Recording") {
+                model.controller.togglePause()
             }
         }
         Divider()
