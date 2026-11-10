@@ -27,6 +27,8 @@ public final class AppController {
     private var autoPausedAt: Date?
     public private(set) var microphoneOK = true
     let playback = AudioPlayback()
+    public let updater: Updater
+    private var updateTimer: Timer?
 
     /// After this long auto-paused (e.g. the meeting ended but nobody pressed Stop), the recording
     /// is stopped and processed instead of waiting indefinitely.
@@ -44,6 +46,7 @@ public final class AppController {
         self.secrets = secrets
         self.urlSession = urlSession
         self.obsidianConfig = obsidianConfig
+        updater = Updater(session: urlSession)
         playback.onUpdate = { [weak self] state in self?.emit("playback", state) }
         recoverInterruptedSessions()
     }
@@ -114,6 +117,12 @@ public final class AppController {
         case "seekAudio":
             if let at = (args["at"] as? NSNumber)?.doubleValue { playback.seek(to: at) }
             return playback.state()
+        case "checkForUpdates":
+            try await updater.check()
+            return updateState()
+        case "installUpdate":
+            try await installUpdate()
+            return NSNull()
         case "stopAudio":
             playback.stop()
             return NSNull()
@@ -176,9 +185,82 @@ public final class AppController {
             "recordingAutoPaused": isAutoPaused,
             "microphoneOK": microphoneOK,
             "playback": playback.state(),
+            "version": updater.currentVersion,
+            "update": updater.available?.json() ?? NSNull(),
             "recordedSeconds": recorder?.recordedSeconds ?? 0,
             "export": exportInfo(),
         ]
+    }
+
+    // MARK: Updates
+
+    private func updateState() -> [String: Any] {
+        ["version": updater.currentVersion, "update": updater.available?.json() ?? NSNull()]
+    }
+
+    /// Checks GitHub shortly after launch and then daily; tells the UI when a newer version exists.
+    public func startAutomaticUpdateChecks() {
+        let check = { [weak self] in
+            Task { @MainActor in
+                guard let self, (try? await self.updater.check()) != nil, let info = self.updater.available else { return }
+                self.emit("updateAvailable", info.json())
+                self.onUpdateAvailable?(info)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { check() }
+        let t = Timer(timeInterval: 24 * 3600, repeats: true) { _ in check() }
+        RunLoop.main.add(t, forMode: .common)
+        updateTimer = t
+    }
+
+    /// Called when an automatic check finds a newer version (the menu bar shows an "Install" item).
+    public var onUpdateAvailable: ((ReleaseInfo) -> Void)?
+
+    private func installUpdate() async throws {
+        guard !isRecording, !isStarting else {
+            throw HypernoteError.message("Stop the recording before updating.")
+        }
+        guard pipelines.isEmpty else {
+            throw HypernoteError.message("Wait until the current transcription or summary finishes, then update.")
+        }
+        if updater.available == nil { try await updater.check() }
+        guard let release = updater.available else {
+            throw HypernoteError.message("You're on the latest version (\(updater.currentVersion)).")
+        }
+        playback.stop()
+        emit("toast", ["kind": "info", "message": "Downloading Hypernote2 \(release.version)… The app will restart."])
+        try await updater.install(release)
+    }
+
+    /// Menu bar "Check for Updates…": native dialogs, since the window may be closed.
+    public func checkForUpdatesInteractively() async {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        do {
+            guard let release = try await updater.check() else {
+                alert.messageText = "Hypernote2 is up to date"
+                alert.informativeText = "You're on version \(updater.currentVersion), the latest release."
+                alert.runModal()
+                return
+            }
+            alert.messageText = "Hypernote2 \(release.version) is available"
+            let notes = release.notes.count > 1200 ? String(release.notes.prefix(1200)) + "…" : release.notes
+            alert.informativeText = "You have \(updater.currentVersion).\n\n\(notes)"
+            alert.addButton(withTitle: "Install and Relaunch")
+            alert.addButton(withTitle: "Later")
+            alert.addButton(withTitle: "Release Notes")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: try await installUpdate()
+            case .alertThirdButtonReturn: NSWorkspace.shared.open(release.pageURL)
+            default: break
+            }
+        } catch {
+            let failure = NSAlert()
+            failure.alertStyle = .warning
+            failure.messageText = "Couldn't update Hypernote2"
+            failure.informativeText = describe(error)
+            failure.runModal()
+        }
     }
 
     // MARK: Markdown export (Obsidian)

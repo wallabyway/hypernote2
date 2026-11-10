@@ -63,6 +63,11 @@ struct MenuContent: View {
             }
         }
         Divider()
+        if let update = model.availableUpdate {
+            Button("Install Update \(update)…") { Task { await model.controller.checkForUpdatesInteractively() } }
+        } else {
+            Button("Check for Updates…") { Task { await model.controller.checkForUpdatesInteractively() } }
+        }
         Toggle("Launch at Login", isOn: Binding(
             get: { model.launchAtLogin },
             set: { model.setLaunchAtLogin($0) }))

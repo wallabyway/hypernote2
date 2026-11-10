@@ -199,12 +199,17 @@
         <button class="icon-btn del ${confirming ? "confirm" : ""}" data-del="${s.id}">${confirming ? "Delete?" : "✕"}</button></div>`;
     }
     if (!items.length) html += `<div class="empty" style="padding:32px 8px">${q ? "No matches" : "No notes yet"}</div>`;
-    html += `</div><div class="sidebar-foot"><span>${S.boot && S.boot.hasAssemblyKey && S.boot.hasDeepseekKey ? "AssemblyAI · DeepSeek" : "Keys not set"}</span>
+    const upd = S.boot && S.boot.update;
+    const footLabel = upd ? `<a class="link update-link" id="update-link">Update to ${esc(upd.version)} available</a>`
+      : `<span>${S.boot && S.boot.hasAssemblyKey && S.boot.hasDeepseekKey ? "AssemblyAI · DeepSeek" : "Keys not set"}</span>`;
+    html += `</div><div class="sidebar-foot">${footLabel}
       <button class="icon-btn" id="settings-btn" title="Settings">${icon("gear")}</button></div>`;
     el.innerHTML = html;
 
     $("#new-btn").onclick = () => newNote().catch(fail);
     $("#settings-btn").onclick = () => { S.view = "settings"; S.editTemplate = null; render(); };
+    const ul = $("#update-link");
+    if (ul) ul.onclick = () => { S.view = "settings"; S.editTemplate = null; render(); const u = $("#updates"); if (u) u.scrollIntoView({ block: "center" }); };
     const search = $("#search");
     search.oninput = (e) => { S.search = e.target.value; const pos = e.target.selectionStart; renderSidebar(); const n = $("#search"); n.focus(); n.setSelectionRange(pos, pos); };
     el.querySelectorAll(".item").forEach((n) => (n.onclick = (e) => {
@@ -290,9 +295,21 @@
         <div class="field" style="margin-top:14px"><label>Default template</label>
           <select id="default-tpl">${b.templates.map((t) => `<option value="${esc(t.id)}" ${t.id === set.defaultTemplateId ? "selected" : ""}>${esc(t.icon)} ${esc(t.title)}</option>`).join("")}</select></div></div>
       ${exportSettingsHTML()}
+      ${updatesHTML()}
       <div class="section"><h2>Summary templates</h2>${S.editTemplate ? templateEditorHTML() : tpls + `<div style="margin-top:12px"><button class="btn" id="tpl-new">${icon("plus")} New template</button></div>`}</div>
       <div class="help">Notes and audio are stored in ~/Library/Application Support/Hypernote2. Audio is uploaded to AssemblyAI for transcription; transcripts are sent to DeepSeek for summaries.</div>
     </div></div>`;
+  }
+
+  function updatesHTML() {
+    const b = S.boot, u = b.update;
+    const status = S.updateStatus || (u ? `Version <b>${esc(u.version)}</b> is available.` : "");
+    return `<div class="section" id="updates"><h2>Updates</h2>
+        <div class="row"><div><b>Hypernote2 ${esc(b.version || "")}</b><div class="help">Checks GitHub for new releases once a day. Updates are verified against this app's signature and keep your permissions.</div>
+          ${status ? `<div class="help" id="update-status" style="margin-top:6px">${status}</div>` : ""}</div>
+          ${u ? `<button class="btn primary" id="update-install" style="white-space:nowrap;flex:none">Install ${esc(u.version)} and relaunch</button>`
+              : `<button class="btn" id="update-check" style="white-space:nowrap;flex:none">${icon("refresh")} Check for updates</button>`}</div>
+        ${u && u.notes ? `<div class="md update-notes">${window.renderMarkdown(u.notes)}</div>` : ""}</div>`;
   }
 
   function exportSettingsHTML() {
@@ -492,6 +509,19 @@
     on("#export-choose", async () => { try { S.boot = await native("chooseExportFolder"); renderMain(); } catch (e) { fail(e); } });
     on("#export-reset", async () => { try { S.boot = await native("setSettings", { resetExportFolder: true }); renderMain(); } catch (e) { fail(e); } });
     on("#export-reveal", () => native("revealExportFolder").catch(fail));
+    on("#update-check", async () => {
+      S.updateStatus = "Checking…"; renderMain();
+      try {
+        const r = await native("checkForUpdates");
+        S.boot.version = r.version; S.boot.update = r.update;
+        S.updateStatus = r.update ? null : `You're on the latest version.`;
+      } catch (e) { S.updateStatus = esc(String(e && e.message ? e.message : e)); }
+      render();
+    });
+    on("#update-install", async () => {
+      S.updateStatus = "Downloading and verifying… Hypernote2 will restart."; renderMain();
+      try { await native("installUpdate"); } catch (e) { S.updateStatus = null; fail(e); renderMain(); }
+    });
     bindTemplates();
 
     if (S.view !== "note" || !S.cur) return;
@@ -661,6 +691,8 @@
     } else if (name === "playback") {
       S.play = payload.stopped ? { id: null, playing: false, position: 0, duration: 0 } : payload;
       updatePlayer();
+    } else if (name === "updateAvailable") {
+      if (S.boot) { S.boot.update = payload; render(); }
     } else if (name === "toast") {
       toast(payload.message, payload.kind);
     } else if (name === "navigate") {

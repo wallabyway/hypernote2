@@ -44,6 +44,14 @@ swift test                    # parsing, prompts, storage, controller (offline, 
 
 In restricted shells, prefix with `SWIFT_BUILD_FLAGS=--disable-sandbox`.
 
+## Updates
+
+Hypernote2 checks GitHub Releases shortly after launch and then once a day. When a newer version exists, the sidebar shows **Update to x.y.z available** and the menu bar shows **Install Update…**. You can also check any time from the menu bar (**Check for Updates…**) or Settings → Updates.
+
+Installing downloads the release zip, verifies that it is signed by the same certificate as the running app (so Microphone and System Audio permissions carry over), swaps it into place and relaunches. It refuses to update while recording or while a transcript is processing.
+
+To publish a release: bump the version in `scripts/build-app.sh`, build, zip with `ditto -c -k --keepParent build/Hypernote2.app build/Hypernote2-<version>.zip`, and attach the zip to a GitHub release tagged `v<version>`.
+
 ## Launch at login
 
 Click the waveform icon in the menu bar and toggle **Launch at Login** (a checkmark means it's on). While the window is open you can also right-click the Dock icon for the same item. This uses macOS's login-item API, so it also shows up in System Settings → General → Login Items.

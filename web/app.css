@@ -290,3 +290,6 @@ select.chip { appearance: none; -webkit-appearance: none; padding-right: 8px; cu
 .toast.error { background: var(--destructive); color: #fff; }
 .toast.success { background: #6d28d9; color: #fff; }
 .toast.warning { background: #b45309; color: #fff; }
+.update-link { color: var(--foreground); font-weight: 600; text-decoration: none; font-size: 12px; }
+.update-link::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #2563eb; margin-right: 6px; vertical-align: 1px; }
+.update-notes { margin-top: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--muted); font-size: 13px; max-height: 260px; overflow-y: auto; }
