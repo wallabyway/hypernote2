@@ -21,6 +21,16 @@ public final class AppController {
     private var recordingStart: Date?
     private var tickTimer: Timer?
     private var pipelines: [String: Task<Void, Never>] = [:]
+    /// True while `startRecording` is awaiting the recorder, so a double click can't start two recorders.
+    private var isStarting = false
+    private var isStopping = false
+    private var autoPausedAt: Date?
+    public private(set) var microphoneOK = true
+    let playback = AudioPlayback()
+
+    /// After this long auto-paused (e.g. the meeting ended but nobody pressed Stop), the recording
+    /// is stopped and processed instead of waiting indefinitely.
+    public static let autoStopAfterSilenceSeconds: Double = 15 * 60
 
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -34,6 +44,7 @@ public final class AppController {
         self.secrets = secrets
         self.urlSession = urlSession
         self.obsidianConfig = obsidianConfig
+        playback.onUpdate = { [weak self] state in self?.emit("playback", state) }
         recoverInterruptedSessions()
     }
 
@@ -72,6 +83,7 @@ public final class AppController {
         case "deleteSession":
             let id = try requireId(args)
             guard id != recordingSessionId else { throw HypernoteError.message("Stop the recording first.") }
+            if playback.sessionId == id { playback.stop() }
             pipelines[id]?.cancel()
             pipelines[id] = nil
             store.deleteSession(id)
@@ -87,6 +99,23 @@ public final class AppController {
             return NSNull()
         case "resumeRecording":
             resumeRecording()
+            return NSNull()
+        case "playAudio":
+            let id = try requireId(args)
+            guard !isRecording else { throw HypernoteError.message("Playback is off while recording, so it doesn't end up in the recording.") }
+            let url = store.audioURL(for: id)
+            guard FileManager.default.fileExists(atPath: url.path) else { throw HypernoteError.message("This note has no audio.") }
+            do { try playback.play(id: id, url: url, at: (args["at"] as? NSNumber)?.doubleValue) }
+            catch { throw HypernoteError.message("Couldn't play the recording: \(describe(error))") }
+            return playback.state()
+        case "pauseAudio":
+            playback.pause()
+            return playback.state()
+        case "seekAudio":
+            if let at = (args["at"] as? NSNumber)?.doubleValue { playback.seek(to: at) }
+            return playback.state()
+        case "stopAudio":
+            playback.stop()
             return NSNull()
         case "summarize":
             let id = try requireId(args)
@@ -145,6 +174,8 @@ public final class AppController {
             "recordingSessionId": recordingSessionId ?? NSNull(),
             "recordingPaused": isPaused,
             "recordingAutoPaused": isAutoPaused,
+            "microphoneOK": microphoneOK,
+            "playback": playback.state(),
             "recordedSeconds": recorder?.recordedSeconds ?? 0,
             "export": exportInfo(),
         ]
@@ -294,13 +325,18 @@ public final class AppController {
     // MARK: Recording
 
     private func startRecording(id: String) async throws {
-        guard !isRecording else { throw HypernoteError.message("Already recording another note.") }
+        guard !isRecording, !isStarting, !isStopping else {
+            throw HypernoteError.message("Already recording another note.")
+        }
         guard secrets.get("assemblyai") != nil else { throw HypernoteError.missingKey("AssemblyAI") }
         guard secrets.get("deepseek") != nil else { throw HypernoteError.missingKey("DeepSeek") }
         guard let existing = store.loadSession(id) else { throw HypernoteError.message("Note not found.") }
         if existing.hasAudio {
             throw HypernoteError.message("This note already has a recording. Start a new note to record again.")
         }
+        isStarting = true
+        defer { isStarting = false }
+        playback.stop()   // don't record our own playback
 
         let settings = store.loadSettings()
         let recorder = MeetingRecorder(autoPause: settings.autoPause)
@@ -310,16 +346,21 @@ public final class AppController {
         recorder.onPauseChange = { [weak self] paused, auto in
             Task { @MainActor in self?.setPaused(paused, auto: auto) }
         }
+        recorder.onMicrophoneHealth = { [weak self] ok in
+            Task { @MainActor in self?.setMicrophoneHealth(ok) }
+        }
         try await recorder.start(to: store.audioURL(for: id),
                                  captureSystemAudio: settings.captureSystemAudio)
         self.recorder = recorder
         recordingSessionId = id
         recordingStart = Date()
+        microphoneOK = true
+        autoPausedAt = nil
         update(id) { $0.status = .recording; $0.error = nil }
         onRecordingChange?(true)
         emit("session", ["id": id])
 
-        if store.loadSettings().captureSystemAudio && !recorder.systemAudioActive {
+        if settings.captureSystemAudio && !recorder.systemAudioActive {
             switch recorder.systemAudioProblem {
             case .permissionDenied:
                 emit("toast", ["kind": "warning", "message":
@@ -332,25 +373,41 @@ public final class AppController {
             }
         }
 
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, let recorder = self.recorder else { return }
-                // Recorded time, not wall-clock time, so the clock stops while paused.
-                self.emit("tick", ["seconds": recorder.recordedSeconds])
-            }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)   // keep ticking while a menu is open
+        tickTimer = timer
+    }
+
+    private func tick() {
+        guard let recorder else { return }
+        // Recorded time, not wall-clock time, so the clock stops while paused.
+        emit("tick", ["seconds": recorder.recordedSeconds])
+        // Forgotten recording: the meeting ended, everyone left, nobody pressed Stop.
+        if isAutoPaused, let since = autoPausedAt,
+           Date().timeIntervalSince(since) >= Self.autoStopAfterSilenceSeconds {
+            emit("toast", ["kind": "info", "message":
+                "Stopped recording after \(Int(Self.autoStopAfterSilenceSeconds / 60)) minutes of silence. Transcribing what was recorded."])
+            Task { await self.stopRecording() }
         }
     }
 
     public func stopRecording() async {
-        guard let id = recordingSessionId, let recorder else { return }
+        guard !isStopping, let id = recordingSessionId, let recorder else { return }
+        // Clear state before awaiting so a second Stop (menu bar + window) can't run this twice.
+        isStopping = true
+        defer { isStopping = false }
         tickTimer?.invalidate()
         tickTimer = nil
-        let duration = await recorder.stop()
         self.recorder = nil
         recordingSessionId = nil
         recordingStart = nil
         isPaused = false
         isAutoPaused = false
+        autoPausedAt = nil
+        microphoneOK = true
+        let duration = await recorder.stop()
         onRecordingChange?(false)
         onPauseChange?(false)
 
@@ -377,12 +434,22 @@ public final class AppController {
         guard recorder != nil, let id = recordingSessionId else { return }
         isPaused = paused
         isAutoPaused = paused && auto
+        autoPausedAt = isAutoPaused ? (autoPausedAt ?? Date()) : nil
         onPauseChange?(paused)
         emit("paused", ["id": id, "paused": paused, "auto": auto])
         if paused && auto {
             emit("toast", ["kind": "info", "message":
                 "No one has spoken for \(Int(MeetingRecorder.autoPauseSeconds)) seconds, so recording is paused. It resumes when someone talks."])
         }
+    }
+
+    private func setMicrophoneHealth(_ ok: Bool) {
+        guard recorder != nil, let id = recordingSessionId, ok != microphoneOK else { return }
+        microphoneOK = ok
+        emit("micStatus", ["id": id, "ok": ok])
+        emit("toast", ok
+            ? ["kind": "success", "message": "Microphone reconnected. Recording continues."]
+            : ["kind": "warning", "message": "The microphone stopped (audio device changed). Reconnecting… System audio is still being recorded."])
     }
 
     /// Menu-bar shortcut: stop if recording, otherwise start a brand-new note.

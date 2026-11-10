@@ -20,7 +20,10 @@
     tab: "summary",
     view: "loading",       // loading | setup | note | settings
     search: "",
-    rec: { id: null, seconds: 0, level: 0, paused: false, auto: false },
+    rec: { id: null, seconds: 0, level: 0, paused: false, auto: false, micOK: true },
+    play: { id: null, playing: false, position: 0, duration: 0 },
+    playIdx: -1,           // transcript row highlighted during playback
+    seeking: false,
     confirmDelete: null,
     editingSpeaker: null,
     editTemplate: null,
@@ -130,6 +133,7 @@
   }
 
   async function openSession(id) {
+    if (S.play.id && S.play.id !== id) native("stopAudio").catch(() => {});
     S.cur = await native("getSession", { id });
     S.view = "note";
     S.titleDirty = false;
@@ -234,6 +238,8 @@
     else el.innerHTML = noteHTML();
 
     bindMain();
+    S.playIdx = -2;   // force the transcript highlight to be re-applied to the new DOM
+    updatePlayer();
     if (S.view === "note" && S.cur && S.tab === "summary") drawDiagrams($("#summary-body"));
     if (focusId) {
       const n = document.getElementById(focusId);
@@ -279,7 +285,7 @@
       <div class="section"><h2>Recording</h2>
         <div class="row"><div><b>Capture other participants</b><div class="help">Also records system audio (Zoom, Meet, Teams…). Needs System Audio Recording permission.</div></div>
           <button class="switch ${set.captureSystemAudio ? "on" : ""}" id="sys-toggle" aria-label="Capture system audio"></button></div>
-        <div class="row" style="margin-top:14px"><div><b>Auto-pause when quiet</b><div class="help">Pauses after 30 seconds with no one speaking and resumes when someone talks. Applies to the next recording.</div></div>
+        <div class="row" style="margin-top:14px"><div><b>Auto-pause when quiet</b><div class="help">Pauses after 30 seconds with no one speaking and resumes when someone talks. Stops and transcribes after 15 minutes of silence, in case you forget. Applies to the next recording.</div></div>
           <button class="switch ${set.autoPause !== false ? "on" : ""}" id="autopause-toggle" aria-label="Auto-pause when quiet"></button></div>
         <div class="field" style="margin-top:14px"><label>Default template</label>
           <select id="default-tpl">${b.templates.map((t) => `<option value="${esc(t.id)}" ${t.id === set.defaultTemplateId ? "selected" : ""}>${esc(t.icon)} ${esc(t.title)}</option>`).join("")}</select></div></div>
@@ -342,18 +348,71 @@
   function listenHTML(recordingThis) {
     const s = S.cur;
     if (recordingThis) {
-      const { paused, auto } = S.rec;
+      const { paused, auto, micOK } = S.rec;
       const pause = paused
         ? `<button class="listen round" id="resume-btn" title="Resume recording" aria-label="Resume recording"><span class="play"></span></button>`
         : `<button class="listen round" id="pause-btn" title="Pause recording" aria-label="Pause recording"><span class="pause"></span></button>`;
-      const hint = !paused ? ""
-        : `<div class="listen-hint">${auto ? "Auto-paused: no one is speaking. Resumes when someone talks." : "Paused. Press play to resume."}</div>`;
+      const hints = [];
+      if (micOK === false) hints.push(`<div class="listen-hint warn">Microphone disconnected — reconnecting… System audio is still being recorded.</div>`);
+      if (paused) hints.push(`<div class="listen-hint">${auto ? "Auto-paused: no one is speaking. Resumes when someone talks." : "Paused. Press play to resume."}</div>`);
+      const hint = hints.join("");
       return `<div class="listen-bar">${hint}<div class="listen-row">${pause}<button class="listen ${paused ? "paused" : "live"}" id="stop-btn" title="Stop and transcribe"><span class="stop"></span>Stop <span class="bars" id="bars">${"<i></i>".repeat(5)}</span><span class="time" id="rec-time">${fmtClock(S.rec.seconds)}</span></button></div></div>`;
     }
-    if (s.hasAudio || isBusy(s)) return "";
+    if (s.hasAudio) return playerHTML();
+    if (isBusy(s)) return "";
     if (S.rec.id) return `<button class="listen" disabled><span class="rec-dot"></span>Recording in another note</button>`;
     return `<button class="listen" id="start-btn"><span class="rec-dot"></span>Start recording</button>`;
   }
+
+  function playerHTML() {
+    const s = S.cur;
+    const mine = S.play.id === s.id;
+    const dur = mine && S.play.duration ? S.play.duration : s.durationSec || 0;
+    const pos = mine ? S.play.position : 0;
+    return `<div class="player-bar" id="player">
+      <button class="listen round" id="play-btn" title="Play recording" aria-label="Play recording"><span class="play"></span></button>
+      <span class="ptime" id="p-pos">${fmtClock(pos)}</span>
+      <input type="range" id="p-seek" min="0" max="${dur}" step="0.1" value="${pos}" aria-label="Playback position" />
+      <span class="ptime" id="p-dur">${fmtClock(dur)}</span></div>`;
+  }
+
+  /** Updates the player bar and transcript highlight in place (no re-render, so editing isn't disturbed). */
+  function updatePlayer() {
+    const s = S.cur;
+    if (!s || S.view !== "note") return;
+    const mine = S.play.id === s.id;
+    const pos = mine ? S.play.position : 0;
+    const btn = $("#play-btn");
+    if (btn) {
+      const playing = mine && S.play.playing;
+      btn.innerHTML = playing ? '<span class="pause"></span>' : '<span class="play"></span>';
+      btn.title = playing ? "Pause playback" : "Play recording";
+    }
+    const p = $("#p-pos"); if (p && !S.seeking) p.textContent = fmtClock(pos);
+    const r = $("#p-seek");
+    if (r && !S.seeking) { if (mine && S.play.duration) r.max = S.play.duration; r.value = pos; }
+    const d = $("#p-dur"); if (d && mine && S.play.duration) d.textContent = fmtClock(S.play.duration);
+
+    let idx = -1;
+    if (mine && (S.play.playing || pos > 0)) {
+      const ms = pos * 1000 + 350;   // matches the lead-in used by playFrom
+      for (let i = 0; i < s.utterances.length && s.utterances[i].startMs <= ms; i++) idx = i;
+    }
+    if (idx === S.playIdx) return;
+    document.querySelectorAll(".utt.playing").forEach((n) => n.classList.remove("playing"));
+    const row = idx >= 0 && document.querySelector(`.utt[data-i="${idx}"]`);
+    if (row) {
+      row.classList.add("playing");
+      // Follow along while playing, but only nudge when the row has left the viewport.
+      if (S.play.playing && S.playIdx >= -1) {
+        const box = row.getBoundingClientRect(), view = row.closest(".scroll").getBoundingClientRect();
+        if (box.top < view.top + 40 || box.bottom > view.bottom - 90) row.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    }
+    S.playIdx = idx;
+  }
+
+  const playFrom = (seconds) => native("playAudio", { id: S.cur.id, at: Math.max(0, seconds) }).then((st) => { S.play = st; updatePlayer(); }).catch(fail);
 
   function tabBodyHTML() {
     const s = S.cur;
@@ -398,14 +457,20 @@
       return `<div class="empty"><h3>No transcript</h3>${s.hasAudio ? "The recording hasn't produced a transcript yet." : "Record a meeting to get a transcript with speaker labels."}
         ${s.hasAudio && s.status !== "recording" ? `<br><button class="btn" id="retry-btn">${icon("refresh")} Transcribe again</button>` : ""}</div>`;
     }
-    const rows = s.utterances.map((u) => {
+    let renaming = false;   // only the first row of the speaker being renamed gets the input
+    const rows = s.utterances.map((u, i) => {
       const color = SPEAKER_COLORS[(u.speaker.charCodeAt(0) - 65 + SPEAKER_COLORS.length * 4) % SPEAKER_COLORS.length];
-      const editing = S.editingSpeaker === u.speaker;
-      return `<div class="utt"><div class="spk" data-spk="${esc(u.speaker)}"><span class="sw" style="background:${color}"></span>
-        <span style="min-width:0">${editing ? `<input id="spk-input" value="${esc(speakerName(s, u.speaker))}" />` : `<span>${esc(speakerName(s, u.speaker))}</span>`}<span class="ts">${fmtMs(u.startMs)}</span></span></div>
+      const editing = S.editingSpeaker === u.speaker && !renaming;
+      if (editing) renaming = true;
+      const name = editing
+        ? `<input id="spk-input" value="${esc(speakerName(s, u.speaker))}" />`
+        : `<span class="spk-name" data-play="${i}" title="${s.hasAudio ? "Play from here" : ""}">${esc(speakerName(s, u.speaker))}</span><button class="spk-edit" data-spk="${esc(u.speaker)}" title="Rename speaker" aria-label="Rename speaker">✎</button>`;
+      return `<div class="utt" data-i="${i}"><div class="spk"><span class="sw" style="background:${color}"></span>
+        <span style="min-width:0"><span class="spk-line">${name}</span><span class="ts" data-play="${i}">${s.hasAudio ? '<span class="ts-play">▶</span>' : ""}${fmtMs(u.startMs)}</span></span></div>
         <div class="utt-text">${esc(u.text)}</div></div>`;
     }).join("");
-    return `<div class="toolbar"><span class="hint grow">Click a speaker name to rename it everywhere.</span>
+    const hint = s.hasAudio ? "Click a speaker to play from there · ✎ renames a speaker everywhere." : "✎ renames a speaker everywhere.";
+    return `<div class="toolbar"><span class="hint grow">${hint}</span>
       <button class="btn" id="copy-transcript">${icon("copy")} Copy</button></div>${rows}`;
   }
 
@@ -443,10 +508,10 @@
     };
     on("#reveal", () => native("revealAudio", { id: s.id }));
     on("#start-btn", async () => {
-      try { S.boot = await native("startRecording", { id: s.id }); S.rec = { id: s.id, seconds: 0, level: 0, paused: false, auto: false }; S.tab = "notes"; await refreshCur(); } catch (e) { fail(e); }
+      try { S.boot = await native("startRecording", { id: s.id }); S.rec = { id: s.id, seconds: 0, level: 0, paused: false, auto: false, micOK: true }; S.tab = "notes"; await refreshCur(); } catch (e) { fail(e); }
     });
     on("#stop-btn", async () => {
-      try { await native("stopRecording"); S.rec = { id: null, seconds: 0, level: 0, paused: false, auto: false }; S.boot.recordingSessionId = null; S.tab = "summary"; await refreshCur(); } catch (e) { fail(e); }
+      try { await native("stopRecording"); S.rec = { id: null, seconds: 0, level: 0, paused: false, auto: false, micOK: true }; S.boot.recordingSessionId = null; S.tab = "summary"; await refreshCur(); } catch (e) { fail(e); }
     });
     on("#pause-btn", () => native("pauseRecording").catch(fail));
     on("#resume-btn", () => native("resumeRecording").catch(fail));
@@ -462,11 +527,34 @@
     });
     on("#copy-transcript", () => native("copy", { text: s.utterances.map((u) => `[${fmtMs(u.startMs)}] ${speakerName(s, u.speaker)}: ${u.text}`).join("\n") }).then(() => toast("Transcript copied")));
 
-    document.querySelectorAll(".spk").forEach((n) => (n.onclick = (e) => {
-      if (e.target.tagName === "INPUT") return;
-      S.editingSpeaker = n.dataset.spk; renderMain();
+    const rename = (label) => {
+      S.editingSpeaker = label; renderMain();
       const i = $("#spk-input"); if (i) { i.focus(); i.select(); }
-    }));
+    };
+    document.querySelectorAll(".spk-edit").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); rename(b.dataset.spk); }));
+    document.querySelectorAll("[data-play]").forEach((n) => {
+      const u = s.utterances[+n.dataset.play];
+      n.onclick = () => {
+        if (!s.hasAudio) { if (n.classList.contains("spk-name")) rename(u.speaker); return; }
+        playFrom(u.startMs / 1000 - 0.3);   // small lead-in so the first word isn't clipped
+      };
+      if (n.classList.contains("spk-name")) n.ondblclick = () => rename(u.speaker);
+    });
+
+    on("#play-btn", () => {
+      if (S.play.id === s.id && S.play.playing) native("pauseAudio").then((st) => { S.play = st; updatePlayer(); }).catch(fail);
+      else native("playAudio", { id: s.id }).then((st) => { S.play = st; updatePlayer(); }).catch(fail);
+    });
+    const seek = $("#p-seek");
+    if (seek) {
+      seek.oninput = () => { S.seeking = true; const p = $("#p-pos"); if (p) p.textContent = fmtClock(+seek.value); };
+      seek.onchange = () => {
+        S.seeking = false;
+        const at = +seek.value;
+        if (S.play.id === s.id) native("seekAudio", { at }).then((st) => { S.play = st; updatePlayer(); }).catch(fail);
+        else playFrom(at);
+      };
+    }
     const si = $("#spk-input");
     if (si) {
       const commit = async () => {
@@ -565,10 +653,18 @@
         S.rec.auto = payload.paused && payload.auto;
         if (S.view === "note" && S.cur && S.cur.id === payload.id) renderMain();
       }
+    } else if (name === "micStatus") {
+      if (S.rec.id === payload.id) {
+        S.rec.micOK = payload.ok;
+        if (S.view === "note" && S.cur && S.cur.id === payload.id) renderMain();
+      }
+    } else if (name === "playback") {
+      S.play = payload.stopped ? { id: null, playing: false, position: 0, duration: 0 } : payload;
+      updatePlayer();
     } else if (name === "toast") {
       toast(payload.message, payload.kind);
     } else if (name === "navigate") {
-      S.rec = { id: payload.id, seconds: 0, level: 0, paused: false, auto: false };
+      S.rec = { id: payload.id, seconds: 0, level: 0, paused: false, auto: false, micOK: true };
       refreshList().then(() => openSession(payload.id)).catch(fail);
     }
   };
@@ -586,8 +682,9 @@
       S.boot = await native("state");
       if (S.boot.recordingSessionId) {
         S.rec = { id: S.boot.recordingSessionId, seconds: S.boot.recordedSeconds || 0, level: 0,
-                  paused: !!S.boot.recordingPaused, auto: !!S.boot.recordingAutoPaused };
+                  paused: !!S.boot.recordingPaused, auto: !!S.boot.recordingAutoPaused, micOK: S.boot.microphoneOK !== false };
       }
+      if (S.boot.playback && S.boot.playback.id) S.play = S.boot.playback;
       await refreshList();
       if (!S.boot.hasAssemblyKey || !S.boot.hasDeepseekKey) { S.view = "setup"; render(); return; }
       S.view = "note";

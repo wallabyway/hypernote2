@@ -66,6 +66,32 @@ final class PauseLogicTests: XCTestCase {
         XCTAssertEqual(feed(&logic, rms: 0.006, seconds: 30), [.autoPaused])   // fan/hum below threshold
     }
 
+    /// Regression: hours of steady noise used to ratchet the noise floor up until normal speech
+    /// no longer counted as voice, so an auto-paused recording never resumed.
+    func testHoursOfNoiseDoNotStopSpeechFromResuming() {
+        var logic = PauseLogic(autoPauseEnabled: true, autoPauseSeconds: 30)
+        XCTAssertEqual(feed(&logic, rms: 0.007, seconds: 3 * 3600), [.autoPaused])
+        XCTAssertEqual(feed(&logic, rms: 0.02, seconds: 1), [.autoResumed])   // quiet-ish speech
+    }
+
+    func testResumedRecordingGetsAFullSilenceWindowBeforePausingAgain() {
+        var logic = PauseLogic(autoPauseEnabled: true, autoPauseSeconds: 30)
+        _ = feed(&logic, rms: quiet, seconds: 30)
+        XCTAssertEqual(feed(&logic, rms: speech, seconds: 0.5), [.autoResumed])
+        XCTAssertEqual(feed(&logic, rms: quiet, seconds: 29), [])
+        XCTAssertFalse(logic.isPaused)
+    }
+
+    func testSampleQueueReportsStalls() {
+        let q = SampleQueue(now: 100)
+        XCTAssertEqual(q.secondsSinceLastAppend(now: 101), 1, accuracy: 0.001)
+        q.append([0, 0], now: 105)
+        XCTAssertEqual(q.secondsSinceLastAppend(now: 108), 3, accuracy: 0.001)
+        q.markAlive(now: 110)
+        XCTAssertEqual(q.secondsSinceLastAppend(now: 110.5), 0.5, accuracy: 0.001)
+        XCTAssertEqual(q.take(10).count, 2)
+    }
+
     func testOldSettingsFileKeepsValuesAndDefaultsAutoPauseOn() throws {
         let json = #"{"captureSystemAudio":false,"defaultTemplateId":"x","deepseekModel":"m"}"#.data(using: .utf8)!
         let s = try JSONDecoder().decode(Settings.self, from: json)

@@ -1,17 +1,39 @@
+import AppKit
 import AVFoundation
 import CoreMedia
 import Foundation
+import os
 import ScreenCaptureKit
 
-/// Thread-safe FIFO of 16 kHz mono samples.
+let recorderLog = Logger(subsystem: "com.hypernote2.app", category: "recorder")
+
+/// Monotonic clock in seconds (does not advance while the Mac sleeps).
+func uptimeSeconds() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
+
+/// Thread-safe FIFO of 16 kHz mono samples. Remembers when audio last arrived so a dead
+/// input (unplugged device, engine stopped by Core Audio) can be detected.
 final class SampleQueue {
     private var samples: [Float] = []
+    private var lastAppend: Double
     private let lock = NSLock()
+
+    init(now: Double = uptimeSeconds()) { lastAppend = now }
 
     var count: Int { lock.lock(); defer { lock.unlock() }; return samples.count }
 
-    func append(_ new: [Float]) {
-        lock.lock(); samples.append(contentsOf: new); lock.unlock()
+    /// Seconds since audio last arrived (or since `markAlive`).
+    func secondsSinceLastAppend(now: Double = uptimeSeconds()) -> Double {
+        lock.lock(); defer { lock.unlock() }
+        return now - lastAppend
+    }
+
+    /// Restarts the stall clock, e.g. right after (re)starting the device.
+    func markAlive(now: Double = uptimeSeconds()) {
+        lock.lock(); lastAppend = now; lock.unlock()
+    }
+
+    func append(_ new: [Float], now: Double = uptimeSeconds()) {
+        lock.lock(); samples.append(contentsOf: new); lastAppend = now; lock.unlock()
     }
 
     /// Removes and returns up to `n` samples from the front.
@@ -28,6 +50,8 @@ final class SampleQueue {
         lock.lock(); defer { lock.unlock() }
         if samples.count > keep { samples.removeFirst(samples.count - keep) }
     }
+
+    func removeAll() { lock.lock(); samples.removeAll(); lock.unlock() }
 }
 
 enum AudioMixer {
@@ -78,19 +102,23 @@ final class PCMResampler {
 }
 
 /// Energy-based voice detector fed with ~250 ms chunks. Adapts to the room's noise floor so
-/// a fan or hum doesn't count as speech.
+/// a fan or hum doesn't count as speech — but the floor is capped, so hours of steady noise
+/// (HVAC, a quiet radio) can never push the threshold above normal speech.
 struct VoiceActivity {
-    static let minimumThreshold: Float = 0.01   // ≈ -40 dBFS RMS; normal speech sits well above
+    static let minimumThreshold: Float = 0.008   // ≈ -42 dBFS RMS; normal speech sits well above
+    static let maximumNoiseFloor: Float = 0.005  // ⇒ threshold never exceeds ≈ -36 dBFS
     private(set) var noiseFloor: Float = 0.002
 
+    var threshold: Float { max(Self.minimumThreshold, noiseFloor * 3) }
+
     mutating func isVoice(_ rms: Float) -> Bool {
-        let voice = rms > max(Self.minimumThreshold, noiseFloor * 4)
+        let voice = rms > threshold
         if rms < noiseFloor {
             noiseFloor = noiseFloor * 0.9 + rms * 0.1        // fall quickly
         } else if !voice {
             noiseFloor = noiseFloor * 0.995 + rms * 0.005    // rise slowly
         }
-        noiseFloor = max(noiseFloor, 0.0005)
+        noiseFloor = min(max(noiseFloor, 0.0005), Self.maximumNoiseFloor)
         return voice
     }
 }
@@ -137,6 +165,7 @@ struct PauseLogic {
             // Two voiced chunks within ~1 s, so a single click or cough doesn't resume.
             if recentVoice.filter({ $0 }).count >= 2 {
                 autoPaused = false
+                lastVoiceFrame = framesSeen
                 return .autoResumed
             }
         } else if !isPaused && autoPauseEnabled && framesSeen - lastVoiceFrame >= autoPauseFrames {
@@ -149,12 +178,19 @@ struct PauseLogic {
 
 /// Records microphone (+ optionally system audio) into one mono AAC file.
 ///
-/// The microphone is the master clock: every 250 ms we write exactly as many frames as the
-/// microphone delivered, mixing in whatever system audio is available.
+/// Normally the microphone is the master clock: every 250 ms we write exactly as many frames as
+/// the microphone delivered, mixing in whatever system audio is available. Core Audio stops the
+/// engine whenever the input device changes (headphones, AirPods, docks, sleep/wake), so:
+///  - configuration changes and wake rebuild the microphone engine,
+///  - a watchdog rebuilds it if no microphone audio arrives for 2 s,
+///  - while the microphone is down the wall clock drives the timeline (system audio + silence),
+///    so the other side of the call is still recorded and auto-pause keeps working.
 public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     public var onLevel: ((Float) -> Void)?
     /// Called on a background queue when recording pauses/resumes. `auto` = triggered by silence detection.
     public var onPauseChange: ((_ paused: Bool, _ auto: Bool) -> Void)?
+    /// Called on a background queue when the microphone stops delivering audio (`false`) and when it recovers (`true`).
+    public var onMicrophoneHealth: ((_ ok: Bool) -> Void)?
     public static let autoPauseSeconds: Double = 30
     public private(set) var systemAudioActive = false
     /// Why system audio isn't being captured (nil when it is, or when it wasn't requested).
@@ -162,27 +198,50 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     public enum SystemAudioProblem { case permissionDenied, failed(String) }
 
-    private let engine = AVAudioEngine()
+    static let micStallSeconds = 2.0
+    static let sysStallSeconds = 3.0
+    static let restartIntervalSeconds = 4.0
+
+    // Microphone engine; touched only on `controlQueue`.
+    private var engine: AVAudioEngine?
+    private var configObserver: NSObjectProtocol?
+    private var micRestartScheduled = false
+
     private let micQueue = SampleQueue()
     private let sysQueue = SampleQueue()
-    private let micResampler = PCMResampler()
     private let sysResampler = PCMResampler()
     private var file: AVAudioFile?
     private var timer: DispatchSourceTimer?
     private var stream: SCStream?
-    private var tap: AnyObject?   // SystemAudioTap (macOS 14.2+)
+    private var tap: AnyObject?   // SystemAudioTap (macOS 14.2+); touched on `controlQueue` after start
+    private var tapWanted = false
+    private var wakeObserver: NSObjectProtocol?
     private let writeQueue = DispatchQueue(label: "hypernote2.recorder.write")
+    private let controlQueue = DispatchQueue(label: "hypernote2.recorder.control")
     private let sysQueueGCD = DispatchQueue(label: "hypernote2.recorder.system")
+
+    // State owned by `writeQueue`.
     private var framesWritten = 0
     private var pauseLogic: PauseLogic
     /// Audio from just before an auto-resume, so the first words aren't cut off.
     private var preRoll: [[Float]] = []
+    private var lastFlush = uptimeSeconds()
+    private var micHealthy = true
+    private var lastMicRecovery = 0.0
+    private var lastSysRecovery = 0.0
+
     private let statsLock = NSLock()
     private var recordedFrames = 0
+    private var active = false
 
     public init(autoPause: Bool = true) {
         pauseLogic = PauseLogic(autoPauseEnabled: autoPause, autoPauseSeconds: Self.autoPauseSeconds)
         super.init()
+    }
+
+    private var isActive: Bool {
+        get { statsLock.lock(); defer { statsLock.unlock() }; return active }
+        set { statsLock.lock(); active = newValue; statsLock.unlock() }
     }
 
     /// Seconds of audio written so far (excludes paused time).
@@ -232,16 +291,16 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             AVEncoderBitRateKey: 32_000,
         ])
         framesWritten = 0
+        isActive = true
 
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0 else { throw HypernoteError.message("No microphone input available.") }
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
-            self.micQueue.append(self.micResampler.convert(buffer))
+        do {
+            try controlQueue.sync { try self.startMicEngine() }
+        } catch {
+            isActive = false
+            file = nil
+            try? FileManager.default.removeItem(at: url)
+            throw error
         }
-        engine.prepare()
-        try engine.start()
 
         if captureSystemAudio {
             do {
@@ -254,6 +313,15 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         }
 
+        // Sleep stops Core Audio IO; rebuild everything on wake instead of waiting for the watchdog.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { [weak self] _ in
+            recorderLog.notice("Woke from sleep; restarting audio inputs")
+            self?.requestMicRestart(after: 1.0)
+            self?.requestSystemAudioRestart(after: 1.0)
+        }
+
+        writeQueue.sync { lastFlush = uptimeSeconds() }
         let t = DispatchSource.makeTimerSource(queue: writeQueue)
         t.schedule(deadline: .now() + .milliseconds(250), repeating: .milliseconds(250))
         t.setEventHandler { [weak self] in self?.flush() }
@@ -263,24 +331,123 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Stops capture, flushes remaining audio and returns the recorded duration in seconds.
     public func stop() async -> Double {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        if let stream { try? await stream.stopCapture() }
-        stream = nil
-        if #available(macOS 14.2, *) { (tap as? SystemAudioTap)?.stop() }
-        tap = nil
+        isActive = false
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        wakeObserver = nil
         timer?.cancel()
         timer = nil
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            writeQueue.async { self.flush(); c.resume() }
+            controlQueue.async {
+                self.stopMicEngine()
+                self.stopTap()
+                c.resume()
+            }
         }
-        file = nil   // closing the file finalizes the m4a
-        return Double(framesWritten) / 16_000
+        if let stream { try? await stream.stopCapture() }
+        stream = nil
+        return await withCheckedContinuation { (c: CheckedContinuation<Double, Never>) in
+            writeQueue.async {
+                self.flush(final: true)
+                self.file = nil   // closing the file finalizes the m4a
+                c.resume(returning: Double(self.framesWritten) / 16_000)
+            }
+        }
     }
 
-    private func flush() {
-        let n = micQueue.count
-        guard n > 0, file != nil else { return }
+    // MARK: Microphone engine (controlQueue)
+
+    /// Builds a fresh engine for the current default input. A new `AVAudioEngine` is used every
+    /// time: after a device change the old one often refuses to restart (HAL error 35).
+    private func startMicEngine() throws {
+        stopMicEngine()
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw HypernoteError.message("No microphone input available.")
+        }
+        let resampler = PCMResampler()
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+            guard let self else { return }
+            self.micQueue.append(resampler.convert(buffer))
+        }
+        let observer = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
+            recorderLog.notice("Audio engine configuration changed (input device switched); restarting microphone")
+            self?.requestMicRestart(after: 0.5)
+        }
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            NotificationCenter.default.removeObserver(observer)
+            input.removeTap(onBus: 0)
+            throw error
+        }
+        self.engine = engine
+        configObserver = observer
+        micQueue.markAlive()
+        recorderLog.notice("Microphone started: \(format.sampleRate, privacy: .public) Hz, \(format.channelCount, privacy: .public) ch")
+    }
+
+    private func stopMicEngine() {
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+        configObserver = nil
+        if let engine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        engine = nil
+    }
+
+    /// Coalesces restart requests (config changes often arrive in bursts).
+    private func requestMicRestart(after delay: Double) {
+        controlQueue.async {
+            guard self.isActive, !self.micRestartScheduled else { return }
+            self.micRestartScheduled = true
+            self.controlQueue.asyncAfter(deadline: .now() + delay) {
+                self.micRestartScheduled = false
+                guard self.isActive else { return }
+                do { try self.startMicEngine() }
+                catch { recorderLog.error("Microphone restart failed: \(error.localizedDescription, privacy: .public)") }
+                // On failure the watchdog in flush() tries again.
+            }
+        }
+    }
+
+    private func requestSystemAudioRestart(after delay: Double) {
+        controlQueue.asyncAfter(deadline: .now() + delay) {
+            guard self.isActive, self.tapWanted else { return }
+            if #available(macOS 14.2, *) {
+                self.stopTap()
+                do {
+                    try self.startTap()
+                    self.sysQueue.markAlive()
+                    recorderLog.notice("System audio tap restarted")
+                } catch {
+                    recorderLog.error("System audio restart failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    // MARK: Writing (writeQueue)
+
+    private func flush(final: Bool = false) {
+        guard file != nil else { return }
+        let now = uptimeSeconds()
+        let elapsedFrames = min(32_000, max(0, Int((now - lastFlush) * 16_000)))
+        lastFlush = now
+
+        if !final { watchdog(now: now) }
+
+        var n = micQueue.count
+        if n == 0 && !micHealthy {
+            // Microphone is down: let the wall clock drive the timeline so system audio is still
+            // recorded (and silence detection keeps running) until the microphone is back.
+            n = elapsedFrames
+        }
+        guard n > 0 else { return }
         let mic = micQueue.take(n)
         let sys = sysQueue.take(n)
         sysQueue.trim(keep: 16_000)   // never let system audio drift more than 1 s behind
@@ -308,6 +475,29 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    private func watchdog(now: Double) {
+        let micSilentFor = micQueue.secondsSinceLastAppend(now: now)
+        let healthy = micSilentFor < Self.micStallSeconds
+        if healthy != micHealthy {
+            micHealthy = healthy
+            if healthy { recorderLog.notice("Microphone audio is flowing again") }
+            else { recorderLog.error("No microphone audio for \(micSilentFor, privacy: .public) s") }
+            onMicrophoneHealth?(healthy)
+        }
+        if !healthy && now - lastMicRecovery >= Self.restartIntervalSeconds {
+            lastMicRecovery = now
+            requestMicRestart(after: 0)
+        }
+        // The tap delivers buffers continuously (silence included), so a gap means it died —
+        // typically because its clock device (e.g. AirPods) went away.
+        if tapWanted && sysQueue.secondsSinceLastAppend(now: now) > Self.sysStallSeconds
+            && now - lastSysRecovery >= Self.restartIntervalSeconds {
+            lastSysRecovery = now
+            sysQueue.markAlive(now: now)
+            requestSystemAudioRestart(after: 0)
+        }
+    }
+
     private func write(_ samples: [Float]) {
         let n = samples.count
         guard n > 0, let file,
@@ -322,7 +512,7 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             framesWritten += n
             statsLock.lock(); recordedFrames = framesWritten; statsLock.unlock()
         } catch {
-            // Disk errors surface as a short recording; nothing safe to do on the audio thread.
+            recorderLog.error("Writing audio failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -336,15 +526,30 @@ public final class MeetingRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             guard await SystemAudioPermission.request() else {
                 throw HypernoteError.message(Self.deniedMarker)
             }
-            let tap = SystemAudioTap()
-            try tap.start { [weak self] pcm in
-                guard let self else { return }
-                self.sysQueue.append(self.sysResampler.convert(pcm))
-            }
-            self.tap = tap
+            try controlQueue.sync { try self.startTap() }
+            sysQueue.markAlive()
+            tapWanted = true
         } else {
             try await startScreenCaptureAudio()
         }
+    }
+
+    /// controlQueue only.
+    @available(macOS 14.2, *)
+    private func startTap() throws {
+        let tap = SystemAudioTap()
+        let resampler = PCMResampler()
+        try tap.start { [weak self] pcm in
+            guard let self else { return }
+            self.sysQueue.append(resampler.convert(pcm))
+        }
+        self.tap = tap
+    }
+
+    /// controlQueue only.
+    private func stopTap() {
+        if #available(macOS 14.2, *) { (tap as? SystemAudioTap)?.stop() }
+        tap = nil
     }
 
     /// Fallback for macOS 14.0–14.1 (requires Screen Recording permission).
